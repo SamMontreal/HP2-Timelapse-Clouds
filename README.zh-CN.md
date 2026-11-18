@@ -12,7 +12,7 @@
 
 ## 切换与移除
 
-退出游戏后再切换入口。旧测试版和正式版若都有游玩进度，先分别备份两边的 saves，再迁移所需存档。要恢复标准移植版，运行游戏根目录的 speed.exe。要移除模组，先备份需要保留的存档和 hp2.ini，再移走 Timelapse-Clouds 文件夹和 Play-Volumetric-Clouds.cmd。简中包与英文包的程序相同，区别是随包说明的语言。
+退出游戏后再切换入口。旧测试版和正式版若都有游玩进度，先分别备份两边的 saves，再迁移所需存档。要恢复标准移植版，运行游戏根目录的 speed.exe。要移除模组，先备份需要保留的存档和 hp2.ini，再移走 Timelapse-Clouds 文件夹和 Play-Volumetric-Clouds.cmd。体积云统一发布一个 Windows 安装包，安装说明提供中文和英文两个版本。
 
 ## 从源码构建
 

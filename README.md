@@ -6,4 +6,4 @@ Regional volumetric clouds for the PS2 recompilation of Need for Speed: Hot Purs
 
 [简体中文安装与构建说明](README.zh-CN.md) · [English installation and build guide](README.en.md)
 
-[Download the Windows packages / 下载 Windows 安装包](https://github.com/SamMontreal/HP2-Timelapse-Clouds/releases/latest)
+[Download the Windows package / 下载 Windows 安装包](https://github.com/SamMontreal/HP2-Timelapse-Clouds/releases/latest)
