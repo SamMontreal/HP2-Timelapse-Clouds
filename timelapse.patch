@@ -1,0 +1,607 @@
+--- a/recomp/runtime/native.h
++++ b/recomp/runtime/native.h
+@@ -67,6 +67,7 @@
+     bool upscaled = false;          // a replacement larger than the game's: the GPU's filter, the GS's levels do not fit it
+     bool loaded = false;            // its pixels were handed over for the GPU and the renderer has not let it go since (g_native_tex_mutex)
+     void *vk = nullptr;             // native_vk.cpp's, read and written on the renderer's thread only
++    unsigned cloud_profile = 0;
+     char name[28] = {};             // the game's, for the logs
+ };
+ 
+@@ -119,6 +120,7 @@
+     uint8_t target;                         // the game's TARGET_ID: 1 the player's view, 8..13 the envmap views
+     uint16_t flags;                         // vi07 of the strips: 0x80 lit, 0x40 road, 0x100 sphere map, 4 gloss map
+     int light;                              // into NativeFrame::lights, -1: none
++    unsigned cloud_profile = 0;
+     bool indexed = false;                   // a strip's: first and count are into NativeFrame::indices, else into NativeFrame::vertices
+ };
+ 
+--- a/recomp/runtime/native.cpp
++++ b/recomp/runtime/native.cpp
+@@ -235,6 +235,7 @@
+     else if (g_texture == g_prev_texture) d.rt = NATIVE_RT_PREVIOUS;
+     else d.tex = native_texture(g_texture, g_frame_no);
+     if (d.tex) d.tex_mode = native_tex_mode(*d.tex), d.tex_upscaled = d.tex->upscaled, d.tex_min_linear = d.tex->min_linear;
++    d.cloud_profile = d.tex ? d.tex->cloud_profile : 0;
+ }
+ static float g_clip[16];
+ static bool g_clip_stale;                   // the target, the pack or the local-world changed since g_clip was made (update_clip)
+--- a/recomp/runtime/native_tex.cpp
++++ b/recomp/runtime/native_tex.cpp
+@@ -1,3 +1,4 @@
++#include "cloud_profiles.h"
+ // The native renderer's textures: a TextureInfo of the game as RGBA8 (native.h). The texels stay the GS's
+ // bytes (alpha 0x80 is 1.0): the shader does the GS's arithmetic on them.
+ #include "native.h"
+@@ -477,6 +478,12 @@
+     }
+     t.upscaled = false;
+     snprintf(t.name, sizeof t.name, "%s", (const char *)host(info + 8));
++    t.cloud_profile = 0;
++    if (!strncmp(t.name,"SKY",3)) {
++        u32 sky_crc = crc32_of(px,bytes);
++        if (pal_bytes) sky_crc=crc32_of(pal,pal_bytes,sky_crc);
++        t.cloud_profile=cloud_profile_for_crc(sky_crc);
++    }
+     if (replay_bar && w == 640 && h >= 62) pc_replay_bar_retouch(t.px.data(), t.w);
+     replace_texture(t, (const char *)host(info + 8), px, bytes, pal, pal_bytes, w, h);
+     if (!strncmp((const char *)host(info + 8), "FONT_", 5)) {
+--- a/recomp/runtime/native_vk.cpp
++++ b/recomp/runtime/native_vk.cpp
+@@ -2,6 +2,7 @@
+ // nothing to do with the GS's: clip space is resolution-free.
+ #include "native.h"
+ #include <mutex>
++#include <chrono>
+ 
+ #include "hw.h"
+ #include "pcconfig.h"
+@@ -16,6 +17,9 @@
+ #include <string>
+ 
+ extern FILE *g_hle_log;
++#include "cloud_weather.h"
++static NativeTexture g_cloud_weather;
++static const bool g_regional_clouds = getenv("HP2_CLOUDS") && atoi(getenv("HP2_CLOUDS")) != 0;
+ 
+ #define VK_NO_PROTOTYPES
+ #ifdef _WIN32
+@@ -138,6 +142,8 @@
+     int bits16;
+     int tex_mode;
+     float snap[2];
++    float cloudTime;
++    int cloudRegion;
+ };
+ 
+ struct FoldVertex { float s, t, u, v; };
+@@ -626,7 +632,7 @@
+     }
+     at += bytes;
+     image_barrier(t->image, 0, levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+-                  VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
++                  VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+     t->owner = tex.tex;
+     t->used = g.frame;
+     tex.tex->vk = t;
+@@ -1065,7 +1071,7 @@
+     pfb.height = H;
+     if (vkCreateFramebuffer(g.dev, &pfb, nullptr, &g.post_fb)) return false;
+ 
+-    VkDescriptorSetLayoutBinding sb = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
++    VkDescriptorSetLayoutBinding sb = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+     VkDescriptorSetLayoutCreateInfo sl = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+     sl.bindingCount = 1;
+     sl.pBindings = &sb;
+@@ -1152,10 +1158,10 @@
+     }
+     la.pSetLayouts = &g.set_layout;
+ 
+-    VkDescriptorSetLayout both[2] = {g.set_layout, g.light_layout};
++    VkDescriptorSetLayout both[3] = {g.set_layout, g.light_layout,g.set_layout};
+     VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push)};
+     VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+-    li.setLayoutCount = 2;
++    li.setLayoutCount = 3;
+     li.pSetLayouts = both;
+     li.pushConstantRangeCount = 1;
+     li.pPushConstantRanges = &pc;
+@@ -1659,6 +1665,47 @@
+ }
+ 
+ // every strip of a target from [first, last) of the draws, up to three passes each
++
++static unsigned cloudSunForView(const NativeFrame &frame, unsigned view, bool report)
++{
++    const NativeDraw *sky=nullptr, *disk=nullptr;
++    for(const auto &draw:frame.draws) {
++        if(draw.target!=view || !draw.count) continue;
++        if(!sky && draw.cloud_profile && draw.snap_x!=0) sky=&draw;
++        if(draw.tex && !draw.indexed && draw.count==6 &&
++           size_t(draw.first)+6<=frame.vertices.size() && !strcmp(draw.tex->name,"SUNCENTER")) disk=&draw;
++    }
++    if(!sky || !disk || sky->view[2]<=0 || sky->view[3]<=0) return 0;
++    double low[2]={1e12,1e12},high[2]={-1e12,-1e12};
++    for(unsigned j=0;j<6;j++) {
++        const auto &v=frame.vertices[disk->first+j];
++        const auto &m=disk->clip;
++        double w=m[3]*v.x+m[7]*v.y+m[11]*v.z+m[15];
++        if(w<=0) return 0;
++        for(int i=0;i<2;i++) {
++            double ndc=(m[i]*v.x+m[4+i]*v.y+m[8+i]*v.z+m[12+i])/w;
++            double pixel=disk->view[i]+(ndc+1)*.5*disk->view[i+2];
++            low[i]=std::min(low[i],pixel);high[i]=std::max(high[i],pixel);
++        }
++    }
++    double ndc[2];
++    for(int i=0;i<2;i++) ndc[i]=(low[i]+high[i]-2.*sky->view[i])/sky->view[i+2]-1.;
++    double a[3],b[3],dir[3];
++    const auto &m=sky->clip;
++    for(int k=0;k<3;k++) {
++        a[k]=m[4*k]-ndc[0]*m[4*k+3]; b[k]=m[4*k+1]-ndc[1]*m[4*k+3];
++    }
++    for(int k=0;k<3;k++) dir[k]=a[(k+1)%3]*b[(k+2)%3]-a[(k+2)%3]*b[(k+1)%3];
++    double n=std::sqrt(dir[0]*dir[0]+dir[1]*dir[1]+dir[2]*dir[2]);
++    double forward=dir[0]*m[3]+dir[1]*m[7]+dir[2]*m[11];
++    if(n<1e-18 || std::abs(forward)<1e-22) return 0;
++    for(double &v:dir) v*=forward>0?1/n:-1/n;
++    constexpr double pi=3.141592653589793;
++    unsigned az=unsigned(std::lround((std::atan2(dir[1],dir[0])+pi)*(8191/(2*pi))));
++    unsigned el=unsigned(std::lround((std::asin(std::clamp(dir[2],-1.,1.))+pi/2)*(8191/pi)));
++    if(report) fprintf(g_hle_log,"cloud sun ray screen %.5f %.5f world %.5f %.5f %.5f region %u\n",ndc[0],ndc[1],dir[0],dir[1],dir[2],sky->cloud_profile);
++    return (1u<<30)|(el<<17)|(az<<4);
++}
+ static void draw_target(const NativeFrame &frame, int target, int vw, int vh, size_t first = 0, size_t last = SIZE_MAX)
+ {
+     const bool in_samples = target == 1 && g.samples != VK_SAMPLE_COUNT_1_BIT;
+@@ -1680,11 +1727,52 @@
+     auto tex_mode = [](const NativeTexture &t) {
+         return (t.repeat_s ? 1 : 0) | (t.repeat_t ? 2 : 0) | (t.mag_linear ? 4 : 0) | (t.min_linear ? 8 : 0) | (t.mip_linear ? 16 : 0) | (t.levels - 1) << 8;
+     };
++    // Resolve the scene before any reflection pass: generic reflection resources are shared by several regions.
++    static unsigned profile_frame=~0u, scene_profile=0;
++    if(profile_frame != g.frame) {
++        profile_frame=g.frame; // Keep the region when the main sky is culled (e.g. a tunnel).
++        for(const auto &sky : frame.draws) if(sky.cloud_profile && sky.target>=1 && sky.target<=3) { scene_profile=sky.cloud_profile;break; }
++        if(const char *forced=getenv("HP2_CLOUD_PROFILE")) { unsigned id=atoi(forced);if(id>=1 && id<=10)scene_profile=id; }
++    }
++    static unsigned rayFrame=~0u, packedSun[4]={};
++    if(g_regional_clouds && rayFrame!=g.frame) {
++        rayFrame=g.frame;
++        // Player one also supplies the environment maps. Only scan extra views in split screen.
++        bool present[4]={};
++        for(const auto &d:frame.draws) if(d.cloud_profile && d.target>0 && d.target<4) present[d.target]=true;
++        for(unsigned view=1;view<4;view++)
++            packedSun[view]=present[view]?cloudSunForView(frame,view,getenv("HP2_SKYPROBE") && g.frame%60==0):0;
++    }
++    static const auto epoch=std::chrono::steady_clock::now();
++    static unsigned clockFrame=~0u;
++    static float weatherTime=0;
++    if(clockFrame!=g.frame) {
++        weatherTime=std::chrono::duration<float>(std::chrono::steady_clock::now()-epoch).count();
++        clockFrame=g.frame;
++    }
++    VkDescriptorSet weatherSet=g_cloud_weather.vk ? ((VkTex*)g_cloud_weather.vk)->set : g.sphere_prev_set;
++    vkCmdBindDescriptorSets(g.cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,g.layout,2,1,&weatherSet,0,nullptr);
+     // what is bound already: the passes of a strip go between a few pipelines and sets, and binding again what is there costs the GPU's front end
+     VkPipeline bound_pipeline = VK_NULL_HANDLE;
+     VkDescriptorSet bound_set = VK_NULL_HANDLE;
+     auto pass = [&](const NativeDraw &d, int which, VkDescriptorSet set, VkPipeline pipeline, float factor, bool textured) {
++        static const bool sky_probe = getenv("HP2_SKYPROBE") != nullptr;
++        static unsigned sky_probe_n = 0;
++        if (sky_probe && which == 0 && d.tex && !strncmp(d.tex->name, "SKY", 3) && sky_probe_n++ < 48) {
++            fprintf(g_hle_log, "SKYPROBE %s target %u indexed %u first %u count %u dyn %u\n", d.tex->name, target, d.indexed, d.first, d.count, frame.dyn_base);
++            fprintf(g_hle_log, "CLIP"); for (float v : d.clip) fprintf(g_hle_log, " %.8g", v); fprintf(g_hle_log, "\n");
++            for (unsigned j=0; j<d.count && j<18; ++j) {
++                unsigned k = d.indexed ? frame.indices.data()[d.first+j] : d.first+j;
++                if (d.indexed) { if(k < frame.dyn_base) continue; k-=frame.dyn_base; }
++                if(k >= frame.vertices.size()) continue;
++                const auto &v=frame.vertices[k]; fprintf(g_hle_log,"VERT %.7g %.7g %.7g uv %.7g %.7g\n",v.x,v.y,v.z,v.s,v.t);
++            }
++            fflush(g_hle_log);
++        }
+         Push p;
++        // Advance wind, density evolution and solar transmission on the same clock.
++        constexpr float cloudTimeScale = 4.0f;
++        p.cloudTime=weatherTime * cloudTimeScale; p.cloudRegion=scene_profile | packedSun[d.target>=1 && d.target<=3 ? d.target : 1];
+         memcpy(p.clip, d.clip, sizeof p.clip);
+         p.scroll[0] = which == 2 ? 0 : d.scroll_s;
+         p.scroll[1] = which == 2 ? 0 : d.scroll_t;
+@@ -1708,6 +1796,25 @@
+         static const bool af_old = getenv("HP2_AFOLD") != nullptr, af_flip = getenv("HP2_AFFLIP") != nullptr;
+         const bool af_every = af_flip ? (g.frame / 120 & 1) != 0 : !af_old;
+         if (which == 0 && d.tex && d.rt < 0 && (d.tex_upscaled || (g.aniso && (af_every || d.tex_min_linear) && d.snap_x != 0 && target < 8))) p.tex_mode |= 32;
++        static const int cloud_steps = getenv("HP2_CLOUD_STEPS") ? std::clamp(atoi(getenv("HP2_CLOUD_STEPS")),16,96) : 48;
++        if(g_regional_clouds && scene_profile && g_cloud_weather.vk && which==0 && d.tex && d.rt<0 && d.snap_x!=0 &&
++           (!strcmp(d.tex->name,"SKYBLUE") || !strcmp(d.tex->name,"SKYBLUECAP") || !strncmp(d.tex->name,"SKYDOME",7))) {
++            const int steps=target>=8?std::min(cloud_steps,24):target==7?std::min(cloud_steps,32):cloud_steps;
++            static unsigned reported[16]={};
++            if(target<16 && reported[target]!=scene_profile) {
++                fprintf(g_hle_log,"clouds: regional profile %u, target %u, material %s, %d steps\n",scene_profile,target,d.tex->name,steps);fflush(g_hle_log);reported[target]=scene_profile;
++            }
++            p.flags|=65536;p.light=-1;
++            p.scroll[0]=float(frame.number%216000)/60.0f;p.scroll[1]=float(scene_profile);
++            p.lod_l=float(steps);
++            set=((VkTex*)g_cloud_weather.vk)->set;
++        }
++        if(g_regional_clouds && scene_profile && g_cloud_weather.vk && which==0 && d.tex &&
++           (!strcmp(d.tex->name,"SUNCENTER") || !strcmp(d.tex->name,"SUNHALO") || !strcmp(d.tex->name,"SUNMAJORRAYS") || !strcmp(d.tex->name,"SUNMINORRAYS") || !strcmp(d.tex->name,"SUNRING"))) {
++            p.flags|=131072;
++            static unsigned reportedSun=0;
++            if(reportedSun!=scene_profile) { fprintf(g_hle_log,"clouds: sun occlusion %u %s\n",scene_profile,d.tex->name); reportedSun=scene_profile; }
++        }
+         if (pipeline != bound_pipeline) vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+         if (set != bound_set) vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &set, 0, nullptr);
+         bound_pipeline = pipeline;
+@@ -2720,6 +2827,17 @@
+         }
+     }
+     VkDeviceSize staged = 0;
++    if (g_regional_clouds) {
++        if (!g_cloud_weather.vk) {
++            NativeTexUpload weather;
++            weather.tex=&g_cloud_weather;weather.w=128;weather.h=1024;
++            weather.repeat_s=true;weather.mag_linear=true;weather.min_linear=true;
++            weather.px.resize(128*1024);
++            for(size_t i=0;i<weather.px.size();i++) weather.px[i]=0xff000000u | kRegionalWeather[i];
++            upload_texture(weather,staged);
++        }
++        if(g_cloud_weather.vk) ((VkTex*)g_cloud_weather.vk)->used=g.frame;
++    }
+     {   // the textures decoded for this frame, and what an earlier one had no room for, in the order they were decoded
+         // Frames that were not drawn (a change of settings, the cache emptied) leave their uploads here, and a texture that changes every
+         // frame (a menu's animation, a movie) is then here several times: only its newest is the texture now
+--- a/recomp/runtime/shaders/native.vert
++++ b/recomp/runtime/shaders/native.vert
+@@ -16,6 +16,8 @@
+     int bits16;
+     int tex_mode;
+     vec2 snap;          // half the target in GS pixels, if the vertices are to land on the GS's sixteenths of a pixel
++    float cloudTime;
++    int cloudRegion;
+ } u;
+ // VU1 memory from 860 (eLightContext) and from 848 (the material), by quads, for each light of the frame
+ layout(std430, set = 1, binding = 0) readonly buffer Lights { vec4 L[]; };
+@@ -28,6 +30,7 @@
+ layout(location = 1) out vec2 v_st;
+ layout(location = 2) out float v_k;
+ layout(location = 3) out float v_far;
++layout(location = 4) out vec3 v_cloud_ray;
+ invariant gl_Position;
+ 
+ const int COLOUR = 0, DIR = 4, EYE = 12, ENV = 14, MAT = 18, QUADS = 22;
+@@ -40,8 +43,111 @@
+     return intBitsToFloat(int(float(floatBitsToInt(x)) * p + b));
+ }
+ 
++layout(set=2,binding=0) uniform sampler2D weatherMap;
++float cloud_hash(vec3 p) {
++    p=fract(p*0.1031); p+=dot(p,p.yzx+33.33);
++    return fract((p.x+p.y)*p.z);
++}
++float cloud_noise(vec3 p) {
++    vec3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
++    return mix(mix(mix(cloud_hash(i),cloud_hash(i+vec3(1,0,0)),f.x),
++                   mix(cloud_hash(i+vec3(0,1,0)),cloud_hash(i+vec3(1,1,0)),f.x),f.y),
++               mix(mix(cloud_hash(i+vec3(0,0,1)),cloud_hash(i+vec3(1,0,1)),f.x),
++                   mix(cloud_hash(i+vec3(0,1,1)),cloud_hash(i+vec3(1,1,1)),f.x),f.y),f.z);
++}
++
++struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
++const RegionCloud regions[10] = RegionCloud[10](
++RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
++RegionCloud(vec4(0.800000,2.400000,0.300000,1.350000),vec4(0.450000,2.400000,0.160000,0.500000),vec4(0.000700,0.001500,38.340000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0550000),vec3(0.345098,0.364706,0.364706),vec3(0.427451,0.439216,0.439216),vec3(0.737255,0.741176,0.721569),vec3(0.240000,0.280000,0.310000)),
++RegionCloud(vec4(2.100000,0.850000,0.800000,1.000000),vec4(0.680000,1.350000,0.800000,0.680000),vec4(-0.001400,0.001000,57.510000,1.000000),vec4(0.6845975,0.3708236,0.6275477,0.0250000),vec3(0.380392,0.384314,0.494118),vec3(0.925490,0.831373,0.674510),vec3(0.984314,0.913725,0.752941),vec3(0.463804,0.450824,0.486824)),
++RegionCloud(vec4(1.100000,2.600000,0.400000,1.200000),vec4(0.520000,2.250000,0.600000,0.670000),vec4(0.000800,-0.001000,76.680000,1.000000),vec4(0.7158600,0.2386200,0.6562050,0.0400000),vec3(0.188235,0.258824,0.380392),vec3(0.156863,0.176471,0.207843),vec3(0.858824,0.854902,0.815686),vec3(0.311294,0.356314,0.426706)),
++RegionCloud(vec4(0.6200000,1.0500000,0.8600000,1.1000000),vec4(0.600000,1.800000,0.780000,0.700000),vec4(0.001600,0.000500,95.850000,1.000000),vec4(-0.9113706,0.4115867,0.0000000,0.0230000),vec3(0.168627,0.231373,0.356863),vec3(0.533333,0.588235,0.623529),vec3(0.847059,0.819608,0.768627),vec3(0.295961,0.330706,0.401059)),
++RegionCloud(vec4(0.6200000,1.0500000,0.8600000,1.1000000),vec4(0.630000,1.500000,1.000000,0.740000),vec4(0.001000,-0.000800,115.020000,1.800000),vec4(-0.9682773,0.2498780,0.0000000,0.0350000),vec3(0.360784,0.313725,0.396078),vec3(0.698039,0.482353,0.364706),vec3(0.835294,0.600000,0.505882),vec3(0.418275,0.335922,0.368745)),
++RegionCloud(vec4(3.800000,0.450000,1.150000,0.850000),vec4(0.760000,0.780000,0.850000,0.660000),vec4(0.001800,0.001200,134.190000,3.500000),vec4(-0.9070254,0.3909592,-0.1563837,0.0180000),vec3(0.270588,0.356863,0.415686),vec3(0.901961,0.835294,0.760784),vec3(0.733333,0.713725,0.682353),vec3(0.368824,0.410392,0.433333)),
++RegionCloud(vec4(2.800000,0.950000,0.520000,1.150000),vec4(0.580000,1.800000,1.100000,0.760000),vec4(-0.001000,0.000500,153.360000,1.800000),vec4(-0.9549347,0.2469659,-0.1646439,0.0400000),vec3(0.262745,0.176471,0.274510),vec3(0.878431,0.627451,0.443137),vec3(0.913725,0.737255,0.603922),vec3(0.230000,0.190000,0.290000)),
++RegionCloud(vec4(1.200000,2.800000,0.420000,0.950000),vec4(0.640000,1.600000,0.800000,0.720000),vec4(0.000700,0.001300,172.530000,1.000000),vec4(-0.7264028,0.4994019,0.4721618,0.0220000),vec3(0.203922,0.290196,0.305882),vec3(0.356863,0.439216,0.400000),vec3(0.419608,0.474510,0.443137),vec3(0.224863,0.293020,0.296314)),
++RegionCloud(vec4(2.000000,1.150000,0.800000,1.050000),vec4(0.690000,1.350000,1.000000,0.750000),vec4(0.001100,-0.000700,191.700000,1.000000),vec4(-0.8282710,0.1553008,0.5383761,0.0280000),vec3(0.129412,0.243137,0.458824),vec3(0.654902,0.549020,0.352941),vec3(0.764706,0.658824,0.552941),vec3(0.252353,0.302980,0.419882))
++);
++// All lengths are km, time is real seconds. XZ corresponds to the track's horizontal XY.
++
++vec3 cloudSunDirection(RegionCloud c) {
++    if((u.cloudRegion & (1<<30))==0) return normalize(c.sun.xyz);
++    float az=float((u.cloudRegion>>4)&8191)*(6.283185307/8191.)-3.141592654;
++    float el=float((u.cloudRegion>>17)&8191)*(3.141592654/8191.)-1.570796327;
++    return vec3(cos(el)*cos(az),sin(el),cos(el)*sin(az));
++}
++
++vec2 cloudWind(int region, RegionCloud c) {
++    if(region==4 || region==5) return vec2(0,.009)*6.6;
++    return normalize(c.motion.xy)*(.004+3.0*length(c.motion.xy))*6.6;
++}
++float shellExit(vec3 ray,float radius) {
++    float b=200.0*ray.y;
++    return -b+sqrt(max(0.0,b*b+radius*radius-40000.0));
++}
++
++float sampleWeather(vec3 anchor, int region) {
++    vec3 n=normalize(anchor);
++    vec2 uv=vec2(fract(atan(n.z,n.x)/6.2831853),
++                 (float(region)*64.0+.5+asin(clamp(n.y,0.0,1.0))*40.10705)/1024.0);
++    return textureLod(weatherMap,uv,0.).r;
++}
++float weatherAt(vec3 ray,int region,RegionCloud c) {
++    vec3 anchor=ray*shellExit(ray,200.0+c.shape.x+.45*c.shape.y);
++    vec2 travel=cloudWind(region,c)*180.0;
++    float phase=fract(u.cloudTime/180.0+.5);
++    vec3 a=anchor, b=anchor;
++    a.xz-=travel*(phase-.5);
++    b.xz-=travel*(fract(phase+.5)-.5);
++    float w=.5-.5*cos(phase*6.2831853);
++    return mix(sampleWeather(b,region),sampleWeather(a,region),w);
++}
++float densityAt(vec3 p,int region,RegionCloud c,float weather) {
++    float h=(length(p+vec3(0,200,0))-(200.0+c.shape.x))/c.shape.y;
++    if(h<=0.0 || h>=1.0) return 0.0;
++    vec2 wind=cloudWind(region,c);
++    vec2 adv=p.xz-wind*u.cloudTime;
++    vec3 q=vec3(adv.x/c.motion.w,h*.72,adv.y)*c.shape.z*1.7+vec3(c.motion.z,0,c.motion.z*.37);
++    float phase=u.cloudTime*.105+c.motion.z;
++    vec3 roll=.51*sin(q.zxy*.83+vec3(phase,-phase*.73,phase*.49));
++    float cells=cloud_noise(q+roll);
++    vec3 detail=q*2.6+roll*1.6+vec3(0,-u.cloudTime*.142,0);
++    float lobes=cloud_noise(detail);
++    float fine=cloud_noise(detail*2.31+roll+vec3(phase*.22,0,-phase*.33));
++    float core=cells*.64+lobes*.25+fine*.11;
++    float cover=clamp(weather*c.shape.w,0.,1.);
++    float crown=clamp((core-.31)*1.62+.48*cover,.07,1.);
++    float layer=smoothstep(0.,.055,h)*(1.-smoothstep(crown*.74,crown,h));
++
++    // Coverage controls optical density continuously, including the last clear-sky texels.
++    float envelope=smoothstep(0.0,.58,cover);
++    float softBody=smoothstep(.44-cover*.19,.88-cover*.18,core);
++    if(region==6) {
++        float wisps=smoothstep(.32,.75,core);
++        return .80*wisps*envelope*smoothstep(0.,.18,h)*(1.-smoothstep(.52,1.,h));
++    }
++    return layer*envelope*softBody*(.90+.85*lobes);
++}
++
++layout(location=5) flat out float sunVisibility;
++float sunTransmission() {
++    int i=clamp((u.cloudRegion & 15)-1,0,9);
++    RegionCloud c=regions[i];vec3 sun=cloudSunDirection(c);
++    float weather=weatherAt(sun,i,c);
++    float start=shellExit(sun,200.+c.shape.x);
++    float end=min(shellExit(sun,200.+c.shape.x+c.shape.y),65.);
++    if(sun.y<-.035 || end<=start) return 1.;
++    float stepSize=(end-start)/48.;
++    float depth=0.;
++    for(int k=0;k<48;k++) depth+=densityAt(sun*(start+(float(k)+.5)*stepSize),i,c,weather);
++    float direct=exp(-depth*stepSize*c.optical.y);
++    return mix(1.,direct*direct,smoothstep(-.035,.045,sun.y));
++}
+ void main()
+ {
++    sunVisibility=1.;
++    if((u.flags & 131072)!=0) sunVisibility=sunTransmission();
+     gl_Position = u.clip * vec4(a_pos, 1.0) * a_w;
+     // VU1 adds X / W to 2^19 as a float, which leaves four bits of fraction (the old path's floats round to the nearest)
+     if (u.snap.x > 0.0 && gl_Position.w > 0.0) {
+@@ -49,13 +155,21 @@
+         px = floor(px * 16.0 + 0.5) / 16.0;
+         gl_Position.xy = (px / u.snap - 1.0) * gl_Position.w;
+     }
++    v_cloud_ray = vec3(0);
++    if ((u.flags & 65536) != 0) {
++        vec4 eye = inverse(u.clip) * vec4(0,0,1,0);
++        // The authored dome uses Z up. Recover the same eye for side and cap,
++        // so their different radii cannot introduce a discontinuity.
++        vec3 ray = a_pos - eye.xyz / eye.w;
++        v_cloud_ray = ray.xzy;
++    }
+     v_k = a_nrm.w * 127.0 / 16.0;
+     v_far = gl_Position.z;
+ #ifdef CLIP_FAR
+     gl_ClipDistance[0] = gl_Position.z;     // past the far plane, as the fragment shader's discard did: clipped before the rasterizer
+ #endif
+     vec4 col = a_col * 255.0;
+-    vec2 st = a_st + u.scroll;
++    vec2 st = a_st + (((u.flags & 65536) != 0) ? vec2(0) : u.scroll);
+     if (u.light >= 0 && (u.flags & 0x1c0) != 0) {
+         int b = u.light * QUADS;
+         vec4 m0 = L[b + MAT], diffuse = L[b + MAT + 1], specular = L[b + MAT + 2], gloss = L[b + MAT + 3];
+--- a/recomp/runtime/shaders/native.frag
++++ b/recomp/runtime/shaders/native.frag
+@@ -14,6 +14,9 @@
+     float lod_l;
+     int bits16;         // the target is PSMCT16 (the envmap views)
+     int tex_mode;       // bits: 1 repeat s, 2 repeat t, 4 mag linear, 8 min linear, 16 mip linear, 32 the GPU's filter; from bit 8 the last level
++    vec2 snap;
++    float cloudTime;
++    int cloudRegion;
+ } u;
+ layout(set = 0, binding = 0) uniform sampler2D tex;
+ // false for the pipelines of draws without the alpha test: a shader with no discard in it keeps the GPU's early depth test
+@@ -22,6 +25,8 @@
+ layout(location = 1) in vec2 v_st;
+ layout(location = 2) in float v_k;
+ layout(location = 3) in float v_far;
++layout(location=5) flat in float sunVisibility;
++layout(location = 4) in vec3 v_cloud_ray;
+ layout(location = 0) out vec4 o_col;
+ 
+ // The GS's sampling, integers and all: the same bytes as the software GS's sample_level and sample_tex.
+@@ -71,6 +76,133 @@
+     return vec4(t);
+ }
+ 
++// Continuous 3-D density field, integrated through an atmospheric cloud shell.
++// No independent skybox faces or image-based cloud cutouts.
++layout(set=2,binding=0) uniform sampler2D weatherMap;
++float cloud_hash(vec3 p) {
++    p=fract(p*0.1031); p+=dot(p,p.yzx+33.33);
++    return fract((p.x+p.y)*p.z);
++}
++float cloud_noise(vec3 p) {
++    vec3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
++    return mix(mix(mix(cloud_hash(i),cloud_hash(i+vec3(1,0,0)),f.x),
++                   mix(cloud_hash(i+vec3(0,1,0)),cloud_hash(i+vec3(1,1,0)),f.x),f.y),
++               mix(mix(cloud_hash(i+vec3(0,0,1)),cloud_hash(i+vec3(1,0,1)),f.x),
++                   mix(cloud_hash(i+vec3(0,1,1)),cloud_hash(i+vec3(1,1,1)),f.x),f.y),f.z);
++}
++
++struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
++const RegionCloud regions[10] = RegionCloud[10](
++RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
++RegionCloud(vec4(0.800000,2.400000,0.300000,1.350000),vec4(0.450000,2.400000,0.160000,0.500000),vec4(0.000700,0.001500,38.340000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0550000),vec3(0.345098,0.364706,0.364706),vec3(0.427451,0.439216,0.439216),vec3(0.737255,0.741176,0.721569),vec3(0.240000,0.280000,0.310000)),
++RegionCloud(vec4(2.100000,0.850000,0.800000,1.000000),vec4(0.680000,1.350000,0.800000,0.680000),vec4(-0.001400,0.001000,57.510000,1.000000),vec4(0.6845975,0.3708236,0.6275477,0.0250000),vec3(0.380392,0.384314,0.494118),vec3(0.925490,0.831373,0.674510),vec3(0.984314,0.913725,0.752941),vec3(0.463804,0.450824,0.486824)),
++RegionCloud(vec4(1.100000,2.600000,0.400000,1.200000),vec4(0.520000,2.250000,0.600000,0.670000),vec4(0.000800,-0.001000,76.680000,1.000000),vec4(0.7158600,0.2386200,0.6562050,0.0400000),vec3(0.188235,0.258824,0.380392),vec3(0.156863,0.176471,0.207843),vec3(0.858824,0.854902,0.815686),vec3(0.311294,0.356314,0.426706)),
++RegionCloud(vec4(0.6200000,1.0500000,0.8600000,1.1000000),vec4(0.600000,1.800000,0.780000,0.700000),vec4(0.001600,0.000500,95.850000,1.000000),vec4(-0.9113706,0.4115867,0.0000000,0.0230000),vec3(0.168627,0.231373,0.356863),vec3(0.533333,0.588235,0.623529),vec3(0.847059,0.819608,0.768627),vec3(0.295961,0.330706,0.401059)),
++RegionCloud(vec4(0.6200000,1.0500000,0.8600000,1.1000000),vec4(0.630000,1.500000,1.000000,0.740000),vec4(0.001000,-0.000800,115.020000,1.800000),vec4(-0.9682773,0.2498780,0.0000000,0.0350000),vec3(0.360784,0.313725,0.396078),vec3(0.698039,0.482353,0.364706),vec3(0.835294,0.600000,0.505882),vec3(0.418275,0.335922,0.368745)),
++RegionCloud(vec4(3.800000,0.450000,1.150000,0.850000),vec4(0.760000,0.780000,0.850000,0.660000),vec4(0.001800,0.001200,134.190000,3.500000),vec4(-0.9070254,0.3909592,-0.1563837,0.0180000),vec3(0.270588,0.356863,0.415686),vec3(0.901961,0.835294,0.760784),vec3(0.733333,0.713725,0.682353),vec3(0.368824,0.410392,0.433333)),
++RegionCloud(vec4(2.800000,0.950000,0.520000,1.150000),vec4(0.580000,1.800000,1.100000,0.760000),vec4(-0.001000,0.000500,153.360000,1.800000),vec4(-0.9549347,0.2469659,-0.1646439,0.0400000),vec3(0.262745,0.176471,0.274510),vec3(0.878431,0.627451,0.443137),vec3(0.913725,0.737255,0.603922),vec3(0.230000,0.190000,0.290000)),
++RegionCloud(vec4(1.200000,2.800000,0.420000,0.950000),vec4(0.640000,1.600000,0.800000,0.720000),vec4(0.000700,0.001300,172.530000,1.000000),vec4(-0.7264028,0.4994019,0.4721618,0.0220000),vec3(0.203922,0.290196,0.305882),vec3(0.356863,0.439216,0.400000),vec3(0.419608,0.474510,0.443137),vec3(0.224863,0.293020,0.296314)),
++RegionCloud(vec4(2.000000,1.150000,0.800000,1.050000),vec4(0.690000,1.350000,1.000000,0.750000),vec4(0.001100,-0.000700,191.700000,1.000000),vec4(-0.8282710,0.1553008,0.5383761,0.0280000),vec3(0.129412,0.243137,0.458824),vec3(0.654902,0.549020,0.352941),vec3(0.764706,0.658824,0.552941),vec3(0.252353,0.302980,0.419882))
++);
++// All lengths are km, time is real seconds. XZ corresponds to the track's horizontal XY.
++
++vec3 cloudSunDirection(RegionCloud c) {
++    if((u.cloudRegion & (1<<30))==0) return normalize(c.sun.xyz);
++    float az=float((u.cloudRegion>>4)&8191)*(6.283185307/8191.)-3.141592654;
++    float el=float((u.cloudRegion>>17)&8191)*(3.141592654/8191.)-1.570796327;
++    return vec3(cos(el)*cos(az),sin(el),cos(el)*sin(az));
++}
++
++vec2 cloudWind(int region, RegionCloud c) {
++    if(region==4 || region==5) return vec2(0,.009)*6.6;
++    return normalize(c.motion.xy)*(.004+3.0*length(c.motion.xy))*6.6;
++}
++float shellExit(vec3 ray,float radius) {
++    float b=200.0*ray.y;
++    return -b+sqrt(max(0.0,b*b+radius*radius-40000.0));
++}
++
++float sampleWeather(vec3 anchor, int region) {
++    vec3 n=normalize(anchor);
++    vec2 uv=vec2(fract(atan(n.z,n.x)/6.2831853),
++                 (float(region)*64.0+.5+asin(clamp(n.y,0.0,1.0))*40.10705)/1024.0);
++    return textureLod(weatherMap,uv,0.).r;
++}
++float weatherAt(vec3 ray,int region,RegionCloud c) {
++    vec3 anchor=ray*shellExit(ray,200.0+c.shape.x+.45*c.shape.y);
++    vec2 travel=cloudWind(region,c)*180.0;
++    float phase=fract(u.cloudTime/180.0+.5);
++    vec3 a=anchor, b=anchor;
++    a.xz-=travel*(phase-.5);
++    b.xz-=travel*(fract(phase+.5)-.5);
++    float w=.5-.5*cos(phase*6.2831853);
++    return mix(sampleWeather(b,region),sampleWeather(a,region),w);
++}
++float densityAt(vec3 p,int region,RegionCloud c,float weather) {
++    float h=(length(p+vec3(0,200,0))-(200.0+c.shape.x))/c.shape.y;
++    if(h<=0.0 || h>=1.0) return 0.0;
++    vec2 wind=cloudWind(region,c);
++    vec2 adv=p.xz-wind*u.cloudTime;
++    vec3 q=vec3(adv.x/c.motion.w,h*.72,adv.y)*c.shape.z*1.7+vec3(c.motion.z,0,c.motion.z*.37);
++    float phase=u.cloudTime*.105+c.motion.z;
++    vec3 roll=.51*sin(q.zxy*.83+vec3(phase,-phase*.73,phase*.49));
++    float cells=cloud_noise(q+roll);
++    vec3 detail=q*2.6+roll*1.6+vec3(0,-u.cloudTime*.142,0);
++    float lobes=cloud_noise(detail);
++    float fine=cloud_noise(detail*2.31+roll+vec3(phase*.22,0,-phase*.33));
++    float core=cells*.64+lobes*.25+fine*.11;
++    float cover=clamp(weather*c.shape.w,0.,1.);
++    float crown=clamp((core-.31)*1.62+.48*cover,.07,1.);
++    float layer=smoothstep(0.,.055,h)*(1.-smoothstep(crown*.74,crown,h));
++
++    // Coverage controls optical density continuously, including the last clear-sky texels.
++    float envelope=smoothstep(0.0,.58,cover);
++    float softBody=smoothstep(.44-cover*.19,.88-cover*.18,core);
++    if(region==6) {
++        float wisps=smoothstep(.32,.75,core);
++        return .80*wisps*envelope*smoothstep(0.,.18,h)*(1.-smoothstep(.52,1.,h));
++    }
++    return layer*envelope*softBody*(.90+.85*lobes);
++}
++
++vec3 cloud_sky(vec3 ray) {
++    int region=clamp((u.cloudRegion & 15)-1,0,9);
++    RegionCloud c=regions[region];
++    vec3 rd=normalize(ray), sun=cloudSunDirection(c);
++    float weather=weatherAt(rd,region,c);
++    vec3 sky=mix(c.horizon,c.zenith,sqrt(clamp(rd.y,0.0,1.0)));
++    if(rd.y<-.035) return sky;
++    float start=shellExit(rd,200.0+c.shape.x);
++    float end=min(shellExit(rd,200.0+c.shape.x+c.shape.y),65.0);
++    int steps=int(u.lod_l);float dt=(end-start)/float(steps);
++    if(dt<=0.0 || weather<=0.0) return sky;
++    float mu=dot(rd,sun), g=c.optical.w;
++    // Henyey-Greenstein forward scattering: each region's art controls strength and sunlight colour.
++    float phase=min((1.0-g*g)/pow(max(1.0+g*g-2.0*g*mu,.04),1.5),6.0);
++    vec3 sum=vec3(0);float trans=1.0;
++    for(int i=0;i<steps;i++) {
++        vec3 p=rd*(start+(float(i)+.5)*dt);
++        float density=densityAt(p,region,c,weather);
++        if(density>0.0) {
++            float light_depth=(densityAt(p+sun*c.shape.y*.17,region,c,weather)*.28+
++                               densityAt(p+sun*c.shape.y*.48,region,c,weather)*.60)*c.shape.y;
++            float light=exp(-light_depth*c.optical.y);
++            float multiple=(1.0-exp(-density))*exp(-light_depth*c.optical.y*.28)*.22;
++            float silver=max(phase-1.0,0.0)*c.optical.z*sqrt(light)*(.07+.12*exp(-density));
++            vec3 colour=c.ambient*.48+c.lit*(.22+.70*light+multiple+silver*.46*light);
++            float peak=max(max(colour.r,colour.g),colour.b);
++            colour/=1.0+max(peak-.98,0.0);
++            float opacity=1.0-exp(-density*dt*c.optical.y);
++            sum+=trans*opacity*colour;trans*=1.0-opacity;
++            if(trans<.012) break;
++        }
++    }
++    vec3 result=sum+trans*sky;
++    float haze=1.0-exp(-max(start-3.0,0.0)*c.sun.w);
++    result=mix(result,sky,haze*.64);
++    return mix(sky,result,smoothstep(-.035,.045,rd.y));
++}
++
+ void main()
+ {
+ #ifndef CLIP_FAR
+@@ -79,7 +211,9 @@
+     vec4 c = floor(v_col * gl_FragCoord.w * 255.0 + 0.01);
+     vec3 rgb;
+     float a8;
+-    if (u.textured > 0.5) {
++    if ((u.flags & 65536) != 0) {
++        rgb = cloud_sky(v_cloud_ray); a8 = 128.0;
++    } else if (u.textured > 0.5) {
+         // the GS's level goes by Q alone: (log2(1 / Q) << L) + K, and Q is 1 / w
+         float lod = u.pass == 2 ? 0.0 : log2(1.0 / gl_FragCoord.w) * pow(2.0, u.lod_l) + (u.pass == 0 ? v_k : 0.0);
+         // the setting's anisotropic filter: the level goes by how the texture lies on the screen, not by Q
+@@ -100,6 +234,7 @@
+         rgb = c.rgb / 255.0;
+         a8 = c.a;
+     }
++    if ((u.flags & 131072)!=0) rgb*=sunVisibility;
+     if (ALPHA_TEST && u.alpha_test > 0.5 && a8 <= 48.0) discard;
+     if (u.bits16 != 0) {                    // what such a target keeps
+         rgb = floor(rgb * 255.0 / 8.0 + 1e-3) * 8.0 / 255.0;
+--- /dev/null
++++ b/recomp/runtime/cloud_profiles.h
+@@ -0,0 +1,13 @@
++// Original, pre-replacement pixel + palette CRCs. Reflection textures deliberately do not select a region.
++static unsigned cloud_profile_for_crc(unsigned crc) { switch(crc) {
++case 0xf18bbb60u: case 0xa7f2e473u: return 1;
++case 0x921a9f87u: case 0xc39012e8u: return 2;
++case 0x5f53c985u: case 0xf206e00cu: return 3;
++case 0x52ef4ff7u: case 0xf553ef60u: case 0xe4d91023u: return 4;
++case 0x142d761cu: case 0xd07bd5c1u: return 5;
++case 0xa9048affu: case 0xbfb846f1u: return 6;
++case 0x28f2c148u: case 0xc279d506u: return 7;
++case 0x0ca81f04u: case 0x0fdfe5eeu: return 8;
++case 0x5ad8ff3cu: case 0x0b24f42au: return 9;
++case 0x1ede2a5eu: case 0x063efb98u: return 10;
++default: return 0; } }
+--- a/recomp/runtime/pcplatform.cpp
++++ b/recomp/runtime/pcplatform.cpp
+@@ -606,6 +606,7 @@
+ // ConsiderStartDemoMode(Timer &last_active_time): the demo starts when (RealTimer - last) * k > BeginDemoModeTimeout
+ void HOOK_ConsiderStartDemoMode__FR5Timer(Ctx &c, void (*orig)(Ctx &))
+ {
++    if (getenv("HP2_QUICKDEMO")) SW(c.r[4].w[0], LW(c.r[28].w[0]-19608)-200000);
+     if (diag_on()) {
+         const u32 gp = c.r[28].w[0], timer = c.r[4].w[0];
+         static u32 calls, last_value;
