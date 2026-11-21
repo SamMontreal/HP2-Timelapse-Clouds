@@ -647,7 +647,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_march.glsl
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,123 @@
 +vec3 cloud_sky(vec3 ray,float qualitySteps) {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
 +    RegionCloud c = cloudProfile(region);
@@ -669,12 +669,19 @@
 +    if (dusk) {
 +        float glow=warm*pow(facing,4.)*exp(-3.4*elevation);
 +        sky=mix(sky,gold,glow*.28);
-+        float cover=highCloudOpacity(rd,region,c,weather);
-+        float rim=1.-smoothstep(.24,.73,cover);
-+        vec3 litSheet=mix(ember,gold,clamp(.25+.46*facing+.34*rim,0.,1.));
-+        vec3 sheet=mix(mix(c.ambient,c.lit,.46),litSheet,warm);
-+        sheet=mix(sheet,c.ambient,.32*smoothstep(.43,.73,cover)*(1.-.62*facing));
-+        sky=mix(sky,sheet,cover);
++    }
++    if (day || dusk) {
++        vec2 layer=highCloudLayer(rd,region,c,sun.xz,dusk);
++        vec3 sheet=vec3(.80,.85,.90);
++        if (dusk) {
++            float edge=1.-smoothstep(.12,.57,layer.x);
++            vec3 shade=mix(c.ambient,sky,.33);
++            vec3 rose=mix(c.lit,vec3(.94,.49,.42),warm*.71);
++            vec3 glint=mix(rose,gold,warm*clamp(.53*facing+.54*layer.y,0.,1.));
++            float direct=clamp(.12+.81*layer.y+.26*edge+.12*facing,0.,1.);
++            sheet=mix(shade,glint,mix(.37,direct,warm));
++        }
++        sky=mix(sky,sheet,layer.x);
 +    }
 +    float start = shellExit(rd,200.+c.shape.x);
 +    float end = min(shellExit(rd,200.+c.shape.x+c.shape.y),65.);
@@ -683,12 +690,6 @@
 +    // two opacity crossings to bound the visible air behind the first cloud.
 +    float airEnd=min(end,shellExit(rd,200.+c.shape.x+.82*c.shape.y));
 +    float front=airEnd, back=airEnd;
-+    if (day && rd.y > .10) {
-+        vec2 sheet = rd.xz / (rd.y+.11);
-+        vec3 ripples = shapeAt(vec3(sheet.x*.32,.27+cloudTime()*.00021,sheet.y*.10));
-+        float veil = smoothstep(.46,.84,.62*ripples.z+.38*ripples.x) * smoothstep(.10,.48,rd.y);
-+        sky = mix(sky,vec3(.79,.84,.89),veil*(.07+.15*pow(facing,5.)));
-+    }
 +    if (!towers && weather<=.016) {
 +        vec3 shaft=qualitySteps>0. ? cloudShafts(rd,sun,c,region,airEnd,front,back,1.) : vec3(0.);
 +        return sky+shaft*(1.-.45*sky);
@@ -772,7 +773,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_sunlight.glsl
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,105 @@
 +// Coordinates on a plane normal to sunlight. Transmittance stays constant
 +// along a parallel light ray in the clear air below the cloud shell.
 +const float lightExtent = 16.;
@@ -872,14 +873,15 @@
 +    vec3 lightColour=mix(c.lit,vec3(1.,.86,.63),daylight(region)?.38:.14);
 +    if (sunset(region)) {
 +        float warm=1.-smoothstep(.14,.64,sun.y);
-+        lightColour=mix(lightColour,vec3(1.,.68,.32),warm)*(1.-highCloudOpacity(sun,region,c,weatherAt(sun,region,c)));
++        lightColour=mix(lightColour,vec3(1.,.68,.32),warm);
 +    }
++    if (sunset(region) || daylight(region)) lightColour*=1.-highCloudLayer(sun,region,c,vec2(0.),false).x;
 +    return lightColour*(.78*phase*depth*sum/float(slices));
 +}
 +#endif
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_volume.glsl
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,222 @@
 +struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
 +const RegionCloud regions[10] = RegionCloud[10](
 +RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
@@ -948,17 +950,38 @@
 +bool daylight(int region) { return region == 0 || region == 4 || region == 8; }
 +bool cumulus(int region) { return daylight(region) || region == 5 || region == 9; }
 +bool sunset(int region) { return region == 5 || region == 7 || region == 9; }
-+// A high, independently advected broken sheet. Its optical depth is shared by
-+// the background sky, solar disc and the shafts underneath the low clouds.
-+float highCloudOpacity(vec3 ray, int region, RegionCloud c, float authored) {
-+    if (!sunset(region) || ray.y < -.035) return 0.;
-+    vec3 at=ray*shellExit(ray,205.);
-+    vec2 p=at.xz - cloudWind(region,c)*(.57*cloudTime());
-+    vec3 coord=vec3(.17*p.x,.43,.29*p.y)+vec3(c.motion.z*.03,0.,0.);
-+    vec3 base=shapeAt(coord);
-+    vec3 ripple=shapeAt(coord*2.4+vec3(.002,-.0007,.001)*cloudTime());
-+    return smoothstep(.27,.68,.29*base.x+.16*base.y+.25*ripple.z+.30*authored)
-+         * smoothstep(-.035,.055,ray.y)*(region==7?.72:region==9?.61:.73);
++// The first component is opacity for compositing, the sun and the air below.
++// The second measures local exposure toward the sun, evaluated only for shading.
++vec2 highCloudLayer(vec3 ray, int region, RegionCloud c, vec2 sunXZ, bool shade) {
++    bool dusk = sunset(region);
++    if ((!dusk && !daylight(region)) || ray.y < -.02) return vec2(0.);
++    bool alpine = region == 7, tropical = region == 9;
++    float radius = alpine ? 205.8 : (tropical ? 207.2 : 206.5);
++    vec2 wind = cloudWind(region,c);
++    vec2 along = normalize(wind + .35*vec2(-wind.y,wind.x));
++    vec2 across = vec2(-along.y,along.x);
++    vec2 pos = ray.xz*shellExit(ray,radius) - wind*(.61*cloudTime());
++    vec2 km = vec2(dot(pos,along),dot(pos,across));
++    vec2 broadScale = alpine ? vec2(.014,.032) : vec2(.023,.036);
++    vec3 seed = vec3(.031,.017,.047)*c.motion.z;
++    vec3 broadUV = vec3(km.x*broadScale.x,.22,km.y*broadScale.y)+seed;
++    vec3 bank = shapeAt(broadUV);
++    vec2 fineScale = dusk && !alpine ? vec2(.067,.135) : vec2(.032,.19);
++    vec2 bent = km*fineScale + .36*(bank.xy-.5);
++    vec3 grain = shapeAt(vec3(bent.x,.36+.30*bank.x+.00032*cloudTime(),bent.y)+seed.yzx);
++    float outline = .66*bank.x + .18*bank.y + .16*sampleWeather(ray,region);
++    float detail = .70*grain.x + .30*grain.y;
++    float mass = outline + (dusk && !alpine ? .37 : .28)*(detail-.5);
++    float alpha = smoothstep(alpine ? .32 : .37, alpine ? .72 : .70,mass)
++                * smoothstep(-.02,.095,ray.y);
++    alpha *= dusk ? (alpine ? .64 : (tropical ? .56 : .67)) : .18;
++    float exposure = 0.;
++    if (shade && dusk && alpha>.003) {
++        vec2 light = vec2(dot(sunXZ,along),dot(sunXZ,across))*broadScale;
++        float sunward = shapeAt(broadUV+vec3(light.x,0.,light.y)*1.65).x;
++        exposure = clamp(.48 + 2.25*(bank.x-sunward) + .56*(.5-detail),0.,1.);
++    }
++    return vec2(alpha,exposure);
 +}
 +RegionCloud cloudProfile(int region) {
 +    RegionCloud c = regions[region];
@@ -1049,6 +1072,14 @@
 +    if (h <= 0. || h >= 1.) return 0.;
 +    if (cumulus(region)) return towerDensity(p,v,h,detail);
 +    vec3 q = p*v.frequency + v.seed;
++    if (region==6) {
++        // The Alpine panorama has curved filaments in the prevailing wind.
++        vec2 wind=cloudWind(6,regions[6]), along=normalize(wind);
++        vec2 km=p.xz-wind*v.evolution;
++        q.xz=vec2(dot(km,along)*.042,dot(km,vec2(-along.y,along.x))*.25)
++             + vec2(regions[6].motion.z*.173,regions[6].motion.z*.119);
++        q.z+=.11*sin(q.x*4.1+h*.87);
++    }
 +    // Outside the cumulus regions, differential flow lifts broad masses while
 +    // their finer erosion follows another velocity. The base remains steadier.
 +    vec3 field = shapeAt(q + vec3(.00061,-.0024,.00082)*v.evolution
@@ -1189,7 +1220,7 @@
 +    float end = min(shellExit(sun,200.+c.shape.x+c.shape.y),65.);
 +    if (end <= start) return 1.;
 +    float weather = weatherAt(sun,region,c);
-+    float highTrans=1.-highCloudOpacity(sun,region,c,weather);
++    float highTrans=1.-highCloudLayer(sun,region,c,vec2(0.),false).x;
 +    if (!cumulus(region) && weather <= .016) return highTrans;
 +    Volume v = cloudVolume(region,c,weather);
 +    const int taps = 20;
