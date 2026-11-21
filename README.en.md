@@ -61,7 +61,7 @@ Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.i
 
 ## Track lighting
 
-Version 1.4.6 uses the 1.4.4 island sky. Sunlight and moving cloud shadows still light roads, bridges and opaque scenery. The near-ground air-scattering pass has been removed. Sky shafts use HP2_CLOUD_SHAFTS and surface lighting uses HP2_CLOUD_GROUND independently. During a police-enabled race, the cloud runtime starts HP2-ShiftLight.exe if it is installed beside the game's speed.exe.
+Version 1.4.7 restores the original vertex lighting on road surfaces, including the asphalt and paving on Calypso Coast. Vehicles and roadside objects no longer cast an extra screen-space shadow through the cloud lighting pass. Roads still receive moving cloud shadows and directional sunlight. The island sky follows version 1.4.4. Sky shafts use HP2_CLOUD_SHAFTS and surface lighting uses HP2_CLOUD_GROUND independently. During a police-enabled race, the cloud runtime starts HP2-ShiftLight.exe if it is installed beside the game's speed.exe.
 
 The original tyre particle renderer is the default. The experimental compositor can be selected with HP2_EXPERIMENTAL_SMOKE=1.
 
