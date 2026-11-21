@@ -50,12 +50,20 @@ Thirty track texture archives resolve to ten sky profiles. The original panorama
 | Parkland | 11–13 · 1.3.0 daytime cumulus | 14–16 · 1.3.0 regional cloud cover |
 | Desert | 21–23 · 1.3.0 first desert sky | 24–26 · 1.3.0 second desert sky |
 | Mediterranean | 31–33 · maritime cumulus against blue sky | 34–36 · rolling cumulus banks, orange sunlit faces and gold edges |
-| Alpine | 41–43 · the 1.3.0 autumn sky and thin mountain cloud | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
+| Alpine | 41–43 · thin autumn clouds with distinct, evolving sunlit edges | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
 | Tropical | 61–63 · humid horizon and cooler cumulus bases | 64–66 · gold-lit island cumulus with blue sky between banks |
 
 Version 1.4.2 restores the sky rendering from 1.3.0 on the seven non-sunset profiles, including autumn mountain tracks 41–43. The Mediterranean, Alpine and tropical sunset profiles retain their directional lighting. Cloud transmittance now shades the baked light on opaque race geometry. Light scattered through nearby cloud gaps is integrated up to the visible surface using its depth. Set HP2_CLOUD_GROUND=0 to compare with the original surface lighting. HP2_CLOUD_SHAFTS=0 also turns off near-ground scattering while retaining surface cloud shadows.
 
+Version 1.4.3 gives the thin clouds on Alpine daytime tracks 41–43 clearer sunlit edges and faster deformation within each cloud. Opaque textured road and track surfaces in the main race view now use real-time diffuse sunlight from the surface normal, the game sun and the current cloud transmission. The original diffuse texture supplies the material colour. Shading painted directly into the texture can remain visible. The sun disc and flare use the cloud shadow at the camera. HP2_CLOUD_GROUND=0 restores the original surface shading.
+
 Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.int/en/appearance-of-clouds-colour.html) · [NASA Earth Observatory on crepuscular rays](https://science.nasa.gov/earth/earth-observatory/crepuscular-rays-and-light-scattering-150090/)
+
+## Track lighting
+
+The 1.4.4 race renderer lights opaque roads, bridge decks and scenery using the surface orientation, the current sun and a map of sunlight passing through the moving clouds. The near-ground pass integrates illuminated air up to the first visible surface. Visible nearby geometry can block sunlight along that path. The effect varies with cloud cover, viewing direction and distance. Stock textures may still contain painted shadows. Use HP2_CLOUD_GROUND=0 to compare the original ground shading, or HP2_CLOUD_SHAFTS=0 to disable the air scattering and retain surface lighting.
+
+The original tyre particle renderer is the default. The experimental compositor can be selected with HP2_EXPERIMENTAL_SMOKE=1.
 
 ## Mediterranean sunset performance
 

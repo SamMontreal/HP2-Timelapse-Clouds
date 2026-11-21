@@ -12,7 +12,7 @@ parser.add_argument("--build-info", type=Path, help="JSON build manifest for thi
 args = parser.parse_args()
 dist = project / "dist"
 dist.mkdir(exist_ok=True)
-archive = dist / "HP2-Timelapse-Clouds-v1.4.2-HP2-0.14-Windows-x64.zip"
+archive = dist / "HP2-Timelapse-Clouds-v1.4.4-HP2-0.14-Windows-x64.zip"
 with ZipFile(archive.with_suffix(".tmp"), "w", ZIP_DEFLATED, compresslevel=9) as z:
     for cmd in sorted((project / "launchers").glob("*.cmd")):
         folder = "" if cmd.name == "Play-Volumetric-Clouds.cmd" else "Timelapse-Clouds/"
@@ -25,7 +25,7 @@ with ZipFile(archive.with_suffix(".tmp"), "w", ZIP_DEFLATED, compresslevel=9) as
             if info["cloud_exe_sha256"] != file_digest(runtime, "sha256").hexdigest():
                 raise ValueError("Build manifest and runtime have different SHA-256 digests")
         z.write(args.build_info, "Timelapse-Clouds/build-info.json")
-    for guide in ("README.zh-CN.md", "README.en.md"):
+    for guide in ("README.md", "README.zh-CN.md", "README.en.md"):
         z.write(project / guide, f"Timelapse-Clouds/{guide}")
 with ZipFile(archive.with_suffix(".tmp")) as z:
     if z.testzip():
