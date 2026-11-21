@@ -5,10 +5,10 @@
  set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
  set(SHADER_HEADERS)
 -foreach(s native.vert native.frag native_fold.vert native_fold.frag native_post.vert native_post.frag native_restore.frag native_grade.frag native_opaque.frag native_extra.frag native_shadow.frag native_ao.frag native_ao_apply.frag
-+foreach(s native.vert native.frag cloud_cache.frag cloud_light.frag native_fold.vert native_fold.frag native_post.vert native_post.frag native_restore.frag native_grade.frag native_opaque.frag native_extra.frag native_shadow.frag native_ao.frag native_ao_apply.frag
++foreach(s native.vert native.frag cloud_cache.frag cloud_light.frag cloud_ground.frag native_fold.vert native_fold.frag native_post.vert native_post.frag native_restore.frag native_grade.frag native_opaque.frag native_extra.frag native_shadow.frag native_ao.frag native_ao_apply.frag
          native_smaa_edge.vert native_smaa_edge.frag native_smaa_weight.vert native_smaa_weight.frag native_smaa_blend.vert native_smaa_blend.frag)
 +    set(CLOUD_SHADER_DEP)
-+    if(s MATCHES "^native[.](vert|frag)$" OR s MATCHES "^cloud_(cache|light)[.]frag$")
++    if(s MATCHES "^native[.](vert|frag)$" OR s MATCHES "^cloud_(cache|light|ground)[.]frag$")
 +        set(CLOUD_SHADER_DEP ${SHADER_DIR}/cloud_volume.glsl ${SHADER_DIR}/cloud_march.glsl ${SHADER_DIR}/cloud_sunlight.glsl ${SHADER_DIR}/sky_panorama.glsl)
 +    endif()
      add_custom_command(OUTPUT ${SHADER_OUT}/${s}.spv.h
@@ -63,6 +63,40 @@
  }
  static float g_clip[16];
  static bool g_clip_stale;                   // the target, the pack or the local-world changed since g_clip was made (update_clip)
+@@ -4256,14 +4257,21 @@
+ static void ao_end()
+ {
+     static const char *env = getenv("HP2_AO");
+-    if (!(env ? atoi(env) : g_cfg.ao) || !pc_racing()) return;
++    const bool ao = env ? atoi(env)!=0 : g_cfg.ao!=0;
++    static const bool ground = [] {
++        const char *clouds=getenv("HP2_CLOUDS"), *setting=getenv("HP2_CLOUD_GROUND");
++        return clouds && atoi(clouds)!=0 && (!setting || atoi(setting)!=0);
++    }();
++    if ((!ao && !ground) || !pc_racing()) return;
+     for (u32 id = 1; id <= 2; id++) {
+         u32 at = 0;
++        bool sky = false;
+         for (size_t i = 0; i < g_frame.draws.size(); i++) {
+             const NativeDraw &d = g_frame.draws[i];
++            if (d.target == id && d.count && d.cloud_profile) sky=true;
+             if (d.target == id && d.count && d.depth_write && d.blend == NB_OPAQUE) at = (u32)i + 1;
+         }
+-        if (!at) continue;
++        if (!at || (!ao && !sky)) continue;
+         for (const NativeFx &other : g_frame.fx)    // never over the shadows, wherever a solid draw may come in the lists
+             if (other.kind == FX_SHADOW && other.target == id && other.at < at) at = other.at;
+         u32 target = 0, pack = 0;
+@@ -4287,7 +4295,8 @@
+         mul_d(to, shift, back);
+         NativeFx f = {};
+         f.at = at;
+-        f.kind = FX_AO;
++        f.kind = ao ? FX_AO : FX_CLOUD_GROUND;
++        f.cloud_ground = ground && sky;
+         f.target = (u8)id;
+         f.rect[0] = (float)(s32)LW(target + 0x14);
+         f.rect[1] = (float)(s32)LW(target + 0x18);
 --- a/recomp/runtime/native.h
 +++ b/recomp/runtime/native.h
 @@ -68,6 +68,7 @@
@@ -81,6 +115,18 @@
      bool indexed = false;                   // a strip's: first and count are into NativeFrame::indices, else into NativeFrame::vertices
      uint32_t ranges = 0;                    // a strip's, drawn by ranges: this many of NativeFrame::ranges from `first`; count is their sum
      bool has_mid = false;                   // clip_mid is there: the draw halfway from the frame before (NativeFrame::doubled)
+@@ -148,9 +150,10 @@
+ // what the game lays over the view between two draws, without geometry of its own
+-enum NativeFxKind { FX_FOG, FX_GREY, FX_DOF, FX_SHADOW, FX_AO };
++enum NativeFxKind { FX_FOG, FX_GREY, FX_DOF, FX_SHADOW, FX_AO, FX_CLOUD_GROUND };
+ struct NativeFx {
+     uint32_t at;                            // the draws before it in NativeFrame::draws are under it
+     uint8_t kind;
+     uint8_t target;                         // FX_SHADOW: the view's number; its shadows are NativeFrame::shadows' with that target
++    bool cloud_ground = false;           // add cloud transmission at this opaque-world boundary
+     bool darken;                            // the fog's mode 1: Cd As
+     float rect[4];                          // the view in the target's pixels: x, y, w, h over 512 x 448
+     uint32_t palette[256];                  // by Z >> 8, RGBA with the GS's bytes
 --- a/recomp/runtime/native_tex.cpp
 +++ b/recomp/runtime/native_tex.cpp
 @@ -1,6 +1,7 @@
@@ -114,7 +160,7 @@
  
  #include "hw.h"
  #include "pcconfig.h"
-@@ -17,6 +18,21 @@
+@@ -17,6 +18,25 @@
  #include <string>
  
  extern FILE *g_hle_log;
@@ -127,6 +173,10 @@
 +    const char *setting=getenv("HP2_CLOUD_SHAFTS");
 +    return !setting || strcmp(setting,"0")!=0;
 +}();
++static const bool cloudGroundEnabled = [] {
++    const char *s=getenv("HP2_CLOUD_GROUND");
++    return !s || atoi(s)!=0;
++}();
 +static constexpr int cloudLightSize=192;
 +static const float cloudTimeScale = [] {
 +    const char *speed = getenv("HP2_CLOUD_SPEED");
@@ -136,11 +186,14 @@
  
  #define VK_NO_PROTOTYPES
  #ifdef _WIN32
-@@ -46,6 +62,12 @@
+@@ -46,6 +66,15 @@
      ;
  static const uint32_t kFoldFrag[] =
  #include "native_fold.frag.spv.h"
 +    ;
++static const uint32_t kCloudGroundFrag[] =
++#include "cloud_ground.frag.spv.h"
++;
 +static const uint32_t kCloudLightFrag[] =
 +#include "cloud_light.frag.spv.h"
 +    ;
@@ -149,7 +202,7 @@
      ;
  static const uint32_t kPostVert[] =
  #include "native_post.vert.spv.h"
-@@ -103,7 +125,7 @@
+@@ -103,7 +132,7 @@
  #include "smaa/SearchTex.h"
  
  #define NV_INSTANCE(X)                                                                                     \
@@ -158,16 +211,34 @@
      X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFeatures) X(vkCreateDevice) X(vkGetDeviceProcAddr)     \
      X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)                              \
      X(vkGetPhysicalDeviceSurfaceFormatsKHR) X(vkGetPhysicalDeviceSurfacePresentModesKHR)                           \
-@@ -179,6 +201,8 @@
-     int merged;
+@@ -180,6 +209,8 @@
      float between;                          // native.vert's particles: where this picture is between the last step and this one
  };
-+
-+static_assert(sizeof(Push) == 128, "Scene constants must fit the Vulkan 1.1 minimum");
  
++static_assert(sizeof(Push) == 128, "Scene constants must fit the Vulkan 1.1 minimum");
++
  // A merged draw's own (native.vert's DrawData), and how many of them and of their commands a picture's buffers have room for at
  // first and at most (they grow with the frames: merge_room): past that the draws go out one by one as before
-@@ -392,6 +416,20 @@
+ struct DrawData {
+@@ -241,7 +272,7 @@
+ // were 8 rows and 8 effects of any kind at most (till 2026-11-17), the shadows, which read none, among them.
+ static const int kPaletteRows = 32;
+ // an effect's row of the palette image; -1: it reads none
+-static bool fx_palette(uint8_t kind) { return kind != FX_SHADOW && kind != FX_AO; }
++static bool fx_palette(uint8_t kind) { return kind != FX_SHADOW && kind != FX_AO && kind != FX_CLOUD_GROUND; }
+ static int fx_row(const NativeFrame &frame, size_t i)
+ {
+     if (!fx_palette(frame.fx[i].kind)) return -1;
+@@ -376,7 +407,7 @@
+     VkImageView ao_view;
+     VkRenderPass ao_pass;
+     VkFramebuffer ao_fb;
+-    VkPipeline ao_pipeline, ao_apply_pipeline;
++    VkPipeline ao_pipeline, ao_apply_pipeline, cloud_ground_pipeline;
+     VkDescriptorSet ao_set;
+     int ao_w, ao_h;
+     // Particles: High, the soft sprites (native.frag, SOFT): a copy of the picture's depth made before a picture's first such sprite
+@@ -392,6 +423,20 @@
      VkDescriptorSetLayout set_layout;
      VkDescriptorPool pool;
      std::vector<VkDescriptorPool> tex_pools;    // more of them for the textures' sets, as the ones before filled up (texture_set)
@@ -188,7 +259,7 @@
      VkSampler sampler[32];                  // repeat s, repeat t, mag linear, min linear, mip linear
      VkBuffer staging;
      void *staging_map;
-@@ -1001,7 +1039,8 @@
+@@ -1001,7 +1046,8 @@
      VkTex *const was = (VkTex *)tex.tex->vk;
      const bool often = was && g.frame - was->born < 120;
      tex.gpu_levels = tex.levels;
@@ -198,7 +269,7 @@
      VkDeviceSize bytes = (VkDeviceSize)tex.px.size() * 4;
      if (bytes > g.staging_cap) {            // larger than all of the staging: that grows before the next frame's uploads (draw_frame)
          if (bytes > kStagingMost || (g.staging_refused && bytes >= g.staging_refused)) return true;     // never fits: it stays as it is
-@@ -1051,7 +1090,7 @@
+@@ -1051,7 +1097,7 @@
      // The sampler is the GPU's filter's (a draw with tex_mode's bit 32); the GS's own sampling fetches texels and does not ask it. With the
      // setting's anisotropic filter every texture is taken linear between texels and levels when small: "nearest, mip linear", which most of
      // the world's textures have, is the GS's way of saving time, and it is what kept the filter off them.
@@ -207,7 +278,7 @@
                                           (tex.mip_linear || g.aniso ? 16 : 0)]);
      t->born = g.frame;
  
-@@ -1070,7 +1109,7 @@
+@@ -1070,7 +1116,7 @@
      }
      at += bytes;
      image_barrier(t->image, 0, levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -216,7 +287,7 @@
      t->owner = tex.tex;
      t->used = g.frame;
      tex.tex->vk = t;
-@@ -1706,6 +1745,40 @@
+@@ -1706,6 +1752,40 @@
      sfb.width = sfb.height = SPHERE_SIZE;
      sfb.layers = 1;
      if (vkCreateFramebuffer(g.dev, &sfb, nullptr, &g.sphere_fb)) return false;
@@ -245,7 +316,7 @@
 +        cf.width = g.cloud_w;
 +        cf.height = g.cloud_h;
 +        if (vkCreateFramebuffer(g.dev,&cf,nullptr,&g.cloud_fb)) return false;
-+        if (cloudShaftsEnabled) {
++        if (cloudShaftsEnabled || cloudGroundEnabled) {
 +            if (!make_image(g.cloud_light_image,g.cloud_light_view,cloudFormat,
 +                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 +                            VK_IMAGE_ASPECT_COLOR_BIT,cloudLightSize,cloudLightSize)) return false;
@@ -257,7 +328,7 @@
      // an effect on the picture: colour only, the depth is being read
      VkAttachmentDescription pa = at[0];
      pa.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-@@ -1720,7 +1793,7 @@
+@@ -1720,7 +1800,7 @@
      pfb.height = H;
      if (vkCreateFramebuffer(g.dev, &pfb, nullptr, &g.post_fb)) return false;
  
@@ -266,7 +337,7 @@
      VkDescriptorSetLayoutCreateInfo sl = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
      sl.bindingCount = 1;
      sl.pBindings = &sb;
-@@ -1763,6 +1836,20 @@
+@@ -1763,6 +1843,20 @@
          }
          if (vkCreateSampler(g.dev, &sa, nullptr, &g.sampler[i])) return false;
      }
@@ -287,7 +358,7 @@
  
      VkDescriptorSetAllocateInfo la = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
      la.descriptorPool = g.pool;
-@@ -1848,10 +1935,10 @@
+@@ -1848,10 +1942,10 @@
          la.pSetLayouts = &g.set_layout;
      }
  
@@ -300,7 +371,7 @@
      li.pSetLayouts = both;
      li.pushConstantRangeCount = 1;
      li.pPushConstantRanges = &pc;
-@@ -1972,9 +2059,9 @@
+@@ -1972,9 +2066,9 @@
      // Particles: High, the soft sprites: the scene's pipelines again with native.frag's SOFT, which reads the depth's copy as a third
      // set. The first two sets and the constants are the scene's own, so what the scene has bound stays bound. No depth is written.
      if (g.depth_copy) {
@@ -312,7 +383,18 @@
          sli.pSetLayouts = soft_sets;
          if (vkCreatePipelineLayout(g.dev, &sli, nullptr, &g.soft_layout)) return false;
          st[0].module = g.clip_far ? vert_clip : vert_old;
-@@ -2159,6 +2246,28 @@
+@@ -2089,6 +2183,10 @@
+         ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+         ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+         if (vkCreateGraphicsPipelines(g.dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.shadow_pipeline)) return false;
++        if (g_regional_clouds && cloudGroundEnabled) {
++            st[1].module=shader(kCloudGroundFrag,sizeof kCloudGroundFrag);
++            if (vkCreateGraphicsPipelines(g.dev,VK_NULL_HANDLE,1,&pi,nullptr,&g.cloud_ground_pipeline)) return false;
++        }
+         // Ambient Occlusion: laid over the picture with the shadows' own blend and sets; and made, unblended, into its image
+         st[1].module = shader(kAoApplyFrag, sizeof kAoApplyFrag);
+         if (vkCreateGraphicsPipelines(g.dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.ao_apply_pipeline)) return false;
+@@ -2159,6 +2257,28 @@
          if (vkCreateGraphicsPipelines(g.dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.grade_pipeline)) return false;
      }
  
@@ -331,7 +413,7 @@
 +        pi.layout = g.cloud_layout;
 +        pi.renderPass = g.cloud_pass;
 +        if (vkCreateGraphicsPipelines(g.dev,VK_NULL_HANDLE,1,&pi,nullptr,&g.cloud_pipeline)) return false;
-+        if (cloudShaftsEnabled) {
++        if (cloudShaftsEnabled || cloudGroundEnabled) {
 +            if (vkAllocateDescriptorSets(g.dev,&la,&g.cloud_light_set)) return false;
 +            bind_view(g.cloud_light_set,g.cloud_light_view,g.sampler[4|8]);
 +            st[1].module=shader(kCloudLightFrag,sizeof kCloudLightFrag);
@@ -341,7 +423,7 @@
      // The port's dithering (native_extra.frag): one pipeline over the finished picture, reading its copy. Made whatever the
      // settings say: turning it on is then no remaking of the renderer.
      {
-@@ -2503,6 +2612,152 @@
+@@ -2503,6 +2623,152 @@
      unsigned long long frames, draws, singles, opaque, passes, pipelines, sets, calls, runs;
  } g_ms;
  
@@ -486,7 +568,7 @@
 +        vkCmdEndRenderPass(g.cmd);
 +        all_barrier();
 +    };
-+    if (cloudShaftsEnabled)
++    if (cloudShaftsEnabled || cloudGroundEnabled)
 +        drawSkyPass(g.cloud_light_fb,g.cloud_light_pipeline,cloudLightSize,cloudLightSize,1);
 +    drawSkyPass(g.cloud_fb,g.cloud_pipeline,g.cloud_w,g.cloud_h,2);
 +}
@@ -494,7 +576,7 @@
  static void draw_target(const NativeFrame &frame, int target, int vw, int vh, size_t first = 0, size_t last = SIZE_MAX)
  {
      const bool in_samples = target == 1 && g.samples != VK_SAMPLE_COUNT_1_BIT;
-@@ -2532,6 +2787,8 @@
+@@ -2532,6 +2798,8 @@
          if (!g_soft_now || target != 1 || !(d.flags & kSoftKinds) || d.depth_write || d.blend == NB_OPAQUE || d.blend >= NB_COUNT) return VK_NULL_HANDLE;
          return g.soft_pipeline[in_samples ? 1 : 0][d.blend][d.depth_test ? 1 : 0];
      };
@@ -503,7 +585,7 @@
      // what is bound already: the passes of a strip go between a few pipelines and sets, and binding again what is there costs the GPU's front end
      VkPipeline bound_pipeline = VK_NULL_HANDLE;
      VkDescriptorSet bound_set = VK_NULL_HANDLE;
-@@ -2567,6 +2824,38 @@
+@@ -2567,6 +2835,38 @@
          static const bool af_old = getenv("HP2_AFOLD") != nullptr, af_flip = getenv("HP2_AFFLIP") != nullptr;
          const bool af_every = af_flip ? (g.frame / 120 & 1) != 0 : !af_old;
          if (which == 0 && d.tex && d.rt < 0 && (d.tex_upscaled || (g.aniso && (af_every || d.tex_min_linear) && d.snap_x != 0 && target < 8))) p.tex_mode |= 32;
@@ -542,7 +624,7 @@
          if (g_merge_stat && target == 1) {
              g_ms.passes++;
              g_ms.pipelines += pipeline != bound_pipeline;
-@@ -2577,7 +2866,7 @@
+@@ -2577,7 +2877,7 @@
          if (set != bound_set) vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &set, 0, nullptr);
          bound_pipeline = pipeline;
          bound_set = set;
@@ -551,7 +633,72 @@
          vkCmdPushConstants(g.cmd, g.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof p, &p);
          const VkDeviceSize mid_want = g_between && d.mid_verts && !merged_cmds && !d.ranges && !d.indexed
                                            ? (VkDeviceSize)(d.mid_first - d.first) * sizeof(NativeVertex) : 0;
-@@ -4143,7 +4432,23 @@
+@@ -3675,7 +3975,10 @@
+ // the render pass of the picture is over: lay this on it
+ static void draw_fx(const NativeFrame &frame, const NativeFx &f, int row)
+ {
+-    if (f.kind != FX_FOG && f.kind != FX_SHADOW && f.kind != FX_AO) {
++    const bool surfaceFx=f.kind==FX_AO || f.kind==FX_CLOUD_GROUND;
++    const bool ground=f.cloud_ground && cachedCloudKey && g.cloud_ground_pipeline;
++    if (f.kind==FX_CLOUD_GROUND && !ground) return;
++    if (f.kind != FX_FOG && f.kind != FX_SHADOW && !surfaceFx) {
+         copy_scene();
+     } else {
+         all_barrier();
+@@ -3695,12 +3998,14 @@
+     // Ambient Occlusion: first into its own image, at every second pixel of the view
+     ShadowPush ao = {};
+     VkViewport ao_vp = {};
+-    if (f.kind == FX_AO) {
++    if (surfaceFx) {
+         float ox, sx, sy;
+         active_region(frame, ox, sx, sy);
+         ao_vp = {ox + f.rect[0] * sx, f.rect[1] * sy, f.rect[2] * sx, f.rect[3] * sy, 0, 1};
+         memcpy(ao.to, f.m, sizeof ao.to);
+         ao.view[0] = ao_vp.x, ao.view[1] = ao_vp.y, ao.view[2] = ao_vp.width, ao.view[3] = ao_vp.height;
++    }
++    if (f.kind == FX_AO) {
+         // (the user, 2026-11-17: it works, and far too faint. It was 0.8 m and 0.75; hp2.ini has both now)
+         ao.rect[0] = (float)g_cfg.ao_reach * 0.01f;         // the reach in metres
+         ao.rect[1] = (float)g_cfg.ao_strength * 0.01f;      // the strength
+@@ -3733,7 +4038,7 @@
+     rb.framebuffer = g.post_fb;
+     rb.renderArea.extent = {(uint32_t)W, (uint32_t)H};
+     vkCmdBeginRenderPass(g.cmd, &rb, VK_SUBPASS_CONTENTS_INLINE);
+-    if (f.kind == FX_AO) {                  // and from that image over the view
++    if (surfaceFx) {
+         const int32_t x0 = std::max((int32_t)ao_vp.x, 0), y0 = std::max((int32_t)ao_vp.y, 0);
+         const int32_t x1 = std::min((int32_t)(ao_vp.x + ao_vp.width), W), y1 = std::min((int32_t)(ao_vp.y + ao_vp.height), H);
+         if (ao_vp.width >= 1 && ao_vp.height >= 1 && x1 > x0 && y1 > y0) {
+@@ -3741,10 +4046,23 @@
+             const VkDescriptorSet both[2] = {g.post_set, g.ao_set};
+             vkCmdSetViewport(g.cmd, 0, 1, &ao_vp);
+             vkCmdSetScissor(g.cmd, 0, 1, &as);
+-            vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.ao_apply_pipeline);
+-            vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.shadow_layout, 0, 2, both, 0, nullptr);
+-            vkCmdPushConstants(g.cmd, g.shadow_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof ao, &ao);
+-            vkCmdDraw(g.cmd, 3, 1, 0, 0);
++            if (ground) {
++                ShadowPush lighting=ao;
++                static_assert(sizeof(lighting.mode)==sizeof(cachedCloudKey));
++                memcpy(&lighting.mode,&cachedCloudKey,sizeof cachedCloudKey);
++                lighting.high=cloudShaftsEnabled ? 1.f : 0.f;
++                const VkDescriptorSet images[2]={g.post_set,g.cloud_light_set};
++                vkCmdBindPipeline(g.cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,g.cloud_ground_pipeline);
++                vkCmdBindDescriptorSets(g.cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,g.shadow_layout,0,2,images,0,nullptr);
++                vkCmdPushConstants(g.cmd,g.shadow_layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof lighting,&lighting);
++                vkCmdDraw(g.cmd,3,1,0,0);
++            }
++            if (f.kind==FX_AO) {
++                vkCmdBindPipeline(g.cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,g.ao_apply_pipeline);
++                vkCmdBindDescriptorSets(g.cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,g.shadow_layout,0,2,both,0,nullptr);
++                vkCmdPushConstants(g.cmd,g.shadow_layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof ao,&ao);
++                vkCmdDraw(g.cmd,3,1,0,0);
++            }
+         }
+         vkCmdEndRenderPass(g.cmd);
+         all_barrier();
+@@ -4143,7 +4461,23 @@
              g_dp_n = 0;
          }
      }
@@ -576,7 +723,7 @@
      {   // the textures decoded for this frame, and what an earlier one had no room for, in the order they were decoded
          // Frames that were not drawn (a change of settings, the cache emptied) leave their uploads here, and a texture that changes every
          // frame (a menu's animation, a movie) is then here several times: only its newest is the texture now
-@@ -4194,6 +4499,7 @@
+@@ -4194,6 +4528,7 @@
      VkDeviceSize zero_vb = 0;
      // the picture between two frames (120) has the mirror and the reflections as the frame before left them: once a frame, not twice.
      // With Reflections at High they are drawn for it too, each draw halfway as the picture's own are (NativeFrame::mid_views).
@@ -647,7 +794,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_march.glsl
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,116 @@
 +vec3 cloud_sky(vec3 ray,float qualitySteps) {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
 +    RegionCloud c = cloudProfile(region);
@@ -659,7 +806,7 @@
 +    bool towers = cumulus(region);
 +    vec3 sky = mix(c.horizon,c.zenith,(day ? (1.-exp(-4.*elevation))/.9817 : sqrt(elevation)));
 +    if (day) sky += vec3(.19,.157,.108)*pow(facing,20.);
-+    if (rd.y < -.035 || region==6) return sky; // Alpine daylight has no low deck.
++    if (rd.y < -.035) return sky;
 +    float weather = weatherAt(rd,region,c);
 +    bool dusk=sunset(region);
 +    float lowSun=1.-smoothstep(.14,.64,sun.y);
@@ -677,6 +824,12 @@
 +    // two opacity crossings to bound the visible air behind the first cloud.
 +    float airEnd=min(end,shellExit(rd,200.+c.shape.x+.82*c.shape.y));
 +    float front=airEnd, back=airEnd;
++    if (day && rd.y > .10) {
++        vec2 sheet = rd.xz / (rd.y+.11);
++        vec3 ripples = shapeAt(vec3(sheet.x*.32,.27+cloudTime()*.00021,sheet.y*.10));
++        float veil = smoothstep(.46,.84,.62*ripples.z+.38*ripples.x) * smoothstep(.10,.48,rd.y);
++        sky = mix(sky,vec3(.79,.84,.89),veil*(.07+.15*pow(facing,5.)));
++    }
 +    if (!towers && weather<=.016) {
 +        vec3 shaft=qualitySteps>0. ? cloudShafts(rd,sun,c,region,airEnd,front,back,1.) : vec3(0.);
 +        return sky+shaft*(1.-.45*sky);
@@ -760,7 +913,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_sunlight.glsl
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,104 @@
 +// Coordinates on a plane normal to sunlight. Transmittance stays constant
 +// along a parallel light ray in the clear air below the cloud shell.
 +const float lightExtent = 16.;
@@ -776,7 +929,6 @@
 +    return lightExtent*s*(.30+.70*abs(s));
 +}
 +float solarColumn(vec2 q, vec3 sun, RegionCloud c, int region) {
-+    if (region==6) return 1.;
 +    vec3 side=sunSide(sun);
 +    vec3 origin=q.x*side + q.y*cross(side,sun);
 +    vec3 radial=origin+vec3(0.,200.,0.);
@@ -868,7 +1020,7 @@
 +#endif
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_volume.glsl
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,169 @@
 +struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
 +const RegionCloud regions[10] = RegionCloud[10](
 +RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
@@ -915,9 +1067,6 @@
 +    b.xz-=travel*(fract(phase+.5)-.5);
 +    float w=.5-.5*cos(phase*6.2831853);
 +    float authored=mix(sampleWeather(b,region),sampleWeather(a,region),w);
-+    if (region==1) return .42+.55*authored; // Parkland: an unbroken, low ceiling.
-+    if (region==2) return smoothstep(.10,.87,authored); // Desert: isolated fair-weather fragments.
-+    if (region==3) return smoothstep(.03,.89,authored); // Broken front with blue gaps.
 +    if (region==7) return .10+.81*authored; // Alpine dusk: a mid-level bank.
 +    return authored;
 +}
@@ -946,11 +1095,6 @@
 +        c.lit = vec3(1.0, .979, .927);
 +        c.ambient = vec3(.29, .356, .465);
 +    }
-+    if (region==0) { c.horizon=mix(c.horizon,regions[0].horizon,.23); c.lit=vec3(1.,.966,.865); }
-+    if (region==8) { c.horizon=mix(c.horizon,regions[8].horizon,.34); c.ambient=vec3(.27,.36,.41); }
-+    if (region==1) { c.shape.x*=.83; c.shape.y*=.72; c.motion.w=1.7; c.ambient=vec3(.24,.275,.30); }
-+    if (region==2) { c.shape.y*=.82; c.shape.z*=1.65; c.lit=vec3(1.,.89,.68); }
-+    if (region==3) { c.shape.y*=1.12; c.motion.w=1.38; c.lit=vec3(.87,.86,.78); }
 +    if (region==7) { c.shape.y*=1.17; c.motion.w=2.25; c.ambient=vec3(.24,.20,.31); }
 +    if (region==9) { c.shape.x*=.67; c.shape.y*=1.61; c.ambient=vec3(.26,.32,.42); }
 +    if (region == 5) {
@@ -1042,8 +1186,7 @@
 +        body += .035*(field.z-.5);
 +    }
 +    float density = smoothstep(-.035,.19,body) * vertical;
-+    if (region==1) density=mix(density,vertical*.80,.34);
-+    if (region==3) density*=.75+.41*field.x;
++    if (region == 6) density *= .44;
 +    if (region==7) density*=.90+.22*field.y;
 +    return density * (1.22 + .46*field.y) * smoothstep(.016,.18,v.cover);
 +}
@@ -1143,7 +1286,7 @@
  invariant gl_Position;
  
  const int COLOUR = 0, DIR = 4, EYE = 12, ENV = 14, MAT = 18, QUADS = 22;
-@@ -205,8 +207,40 @@
+@@ -205,8 +207,39 @@
      }
  }
  
@@ -1156,7 +1299,6 @@
 +layout(location=8) flat out float sunVisibility;
 +float sunTransmission() {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
-+    if (region==6) return 1.;
 +    RegionCloud c = cloudProfile(region);
 +    vec3 sun = cloudSunDirection(c);
 +    if (sun.y < -.035) return 1.;
@@ -1184,7 +1326,7 @@
      mat4 clip = u.clip;
      int light = u.light;
      if (u.merged != 0) {
-@@ -242,6 +276,13 @@
+@@ -242,6 +275,13 @@
          vec2 px = (gl_Position.xy / gl_Position.w + 1.0) * u.snap;
          px = floor(px * 16.0 + 0.5) / 16.0;
          gl_Position.xy = (px / u.snap - 1.0) * gl_Position.w;
@@ -1221,4 +1363,70 @@
 +    float halfAngle = .5*(az-focus);
 +    float u = .5+2.*atan(sin(halfAngle),forwardSpacing*cos(halfAngle))/skyTau;
 +    return vec2(u,row);
++}
+--- /dev/null
++++ b/recomp/runtime/shaders/cloud_ground.frag
+@@ -0,0 +1,63 @@
++#version 450
++#extension GL_GOOGLE_include_directive : require
++layout(push_constant) uniform Push {
++    mat4 to;
++    vec4 rect, colour, view;
++    int key;
++    float texel, low, shafts;
++} u;
++layout(set=0,binding=0) uniform sampler2D depth;
++layout(set=1,binding=0) uniform sampler2D weatherMap;
++layout(location=0) out vec4 outLight;
++int cloudRegion() { return u.key; }
++float cloudTime() { return 0.; }
++// Only the region, projection and sun-direction helpers are used here.
++#include "cloud_volume.glsl"
++#define BUILD_SOLAR_COLUMNS
++#include "cloud_sunlight.glsl"
++
++float transmission(vec2 q) { return textureLod(weatherMap, lightMapUV(q), 0.).r; }
++
++// A sunlit column must border an actual cloud shadow to scatter as a beam.
++float opening(vec2 q, float along) {
++    float light=transmission(q);
++    float neighbours=.5*(transmission(q+vec2(along,0.))+transmission(q-vec2(along,0.)));
++    return light*smoothstep(.015,.58,light-neighbours);
++}
++
++void main() {
++    ivec2 pixel=ivec2(gl_FragCoord.xy);
++    float z=texelFetch(depth,pixel,0).r;
++    if (z<=0.) discard;
++    vec2 ndc=2.*(gl_FragCoord.xy-u.view.xy)/u.view.zw-1.;
++    vec4 h=u.to*vec4(ndc,z,1.);
++    if (abs(h.w)<1.e-12) discard;
++    vec3 p=h.xzy/h.w*.001;  // Track metres (Z up) to cloud kilometres (Y up).
++    float range=length(p);
++    if (!(range>.0001 && range<12.)) discard;
++    int region=clamp((u.key&15)-1,0,9);
++    vec3 sun=cloudSunDirection(regions[region]);
++    float daylightShare=smoothstep(.005,.12,sun.y);
++    if (daylightShare<.001) discard;
++    vec3 side=sunSide(sun);
++    vec2 q=vec2(dot(p,side),dot(p,cross(side,sun)));
++    float light=transmission(q);
++    float dusk=sunset(region) ? 1.-smoothstep(.14,.64,sun.y) : 0.;
++    // Leave most of the vertex-baked light as ambient, even under an opaque bank.
++    float shade=(1.-light)*mix(region==6 ? .14 : .21,.27,dusk);
++    float beam=0.;
++    if (u.shafts>.5) {
++        vec3 rd=p/range;
++        float facing=smoothstep(-.18,.95,dot(rd,sun));
++        if (facing>.001) {
++            // Integrate illuminated air only as far as the first opaque surface.
++            float path=min(range,2.4);
++            vec2 end=q*(path/range);
++            float sum=opening(end*.167,.46)+opening(end*.5,.46)+opening(end*.833,.46);
++            beam=.16*facing*(1.-exp(-path*1.65))*(sum/3.);
++        }
++    }
++    float visibility=daylightShare*(1.-smoothstep(7.,12.,range));
++    vec3 scatter=mix(vec3(.91,.94,1.),vec3(1.,.72,.43),dusk);
++    outLight=vec4(scatter*beam,(shade+beam*(1.-shade)))*visibility;
 +}

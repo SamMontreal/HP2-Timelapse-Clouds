@@ -1,8 +1,8 @@
 # HP2 Timelapse Clouds
 
-Regional volumetric clouds for version 0.14 of the PS2 recompilation of Need for Speed: Hot Pursuit 2. Sunlit cumulus with cool bases, and independently growing and dissipating lobes on clear daytime tracks. Low sunlight produces amber edges and orange-lit cloud faces on Mediterranean, alpine and tropical sunset tracks. Desert fragments, clear Alpine daytime skies and parkland overcast follow their original track weather. Sunlight through cloud gaps forms shafts below the cloud base. Ten regional profiles, solar occlusion and 4× time-lapse motion. Includes normal-speed and original-sky launchers.
+Regional volumetric clouds for HP2 Recomp 0.14. Version 1.4.2 restores the 1.3.0 daytime skies, retains the three sunset profiles, and brings moving cloud shadows and light through cloud gaps onto the track. The default launcher uses 4× cloud speed.
 
-《极品飞车：热力追踪 2》PS2 重编译版 0.14 体积云模组。晴天赛道加入带冷色云底的积云。地中海、秋季山地和热带黄昏按太阳方位呈现火烧云和金边。沙漠碎云、山地晴空及林地阴云保留各自的形态。十组地区云层随风变化，云隙下方可见体积光。默认四倍速，提供原速和原版天空入口。
+《极品飞车：热力追踪 2》PS2 重编译版 0.14 体积云模组。1.4.2 恢复 1.3.0 的非黄昏天空，保留三组黄昏云，新增赛道地面的移动云影和近地光束。默认四倍云速。
 
 [简体中文安装与构建说明](README.zh-CN.md) · [English installation and build guide](README.en.md)
 

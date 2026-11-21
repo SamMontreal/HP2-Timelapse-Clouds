@@ -12,7 +12,7 @@ parser.add_argument("--build-info", type=Path, help="JSON build manifest for thi
 args = parser.parse_args()
 dist = project / "dist"
 dist.mkdir(exist_ok=True)
-archive = dist / "HP2-Timelapse-Clouds-v1.4.1-HP2-0.14-Windows-x64.zip"
+archive = dist / "HP2-Timelapse-Clouds-v1.4.2-HP2-0.14-Windows-x64.zip"
 with ZipFile(archive.with_suffix(".tmp"), "w", ZIP_DEFLATED, compresslevel=9) as z:
     for cmd in sorted((project / "launchers").glob("*.cmd")):
         folder = "" if cmd.name == "Play-Volumetric-Clouds.cmd" else "Timelapse-Clouds/"

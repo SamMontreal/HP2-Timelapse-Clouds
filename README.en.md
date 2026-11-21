@@ -47,19 +47,21 @@ Thirty track texture archives resolve to ten sky profiles. The original panorama
 
 | Environment | First sky | Second sky |
 | --- | --- | --- |
-| Parkland | 11–13 · broken, warm-white cumulus | 14–16 · a low overcast deck with a dark base |
-| Desert | 21–23 · scattered pale-gold fragments | 24–26 · thicker broken banks with blue gaps |
+| Parkland | 11–13 · 1.3.0 daytime cumulus | 14–16 · 1.3.0 regional cloud cover |
+| Desert | 21–23 · 1.3.0 first desert sky | 24–26 · 1.3.0 second desert sky |
 | Mediterranean | 31–33 · maritime cumulus against blue sky | 34–36 · rolling cumulus banks, orange sunlit faces and gold edges |
-| Alpine | 41–43 · open sky above the mountains | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
+| Alpine | 41–43 · the 1.3.0 autumn sky and thin mountain cloud | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
 | Tropical | 61–63 · humid horizon and cooler cumulus bases | 64–66 · gold-lit island cumulus with blue sky between banks |
 
-The low sun's elevation changes the direct light colour. Local shadowing preserves cool interiors while illuminated undersides and thin edges can glow. Version 1.4.1 removes the added high-cloud layer across all tracks. Alpine daytime now shows the sky gradient and sun. On the other tracks the lower weather systems still control cloud cover. Local cloud thickness toward the sun controls the peach and gold highlights. The same opacity attenuates the sun and the shafts below. The original sky launcher remains available.
+Version 1.4.2 restores the sky rendering from 1.3.0 on the seven non-sunset profiles, including autumn mountain tracks 41–43. The Mediterranean, Alpine and tropical sunset profiles retain their directional lighting. Cloud transmittance now shades the baked light on opaque race geometry. Light scattered through nearby cloud gaps is integrated up to the visible surface using its depth. Set HP2_CLOUD_GROUND=0 to compare with the original surface lighting. HP2_CLOUD_SHAFTS=0 also turns off near-ground scattering while retaining surface cloud shadows.
 
 Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.int/en/appearance-of-clouds-colour.html) · [NASA Earth Observatory on crepuscular rays](https://science.nasa.gov/earth/earth-observatory/crepuscular-rays-and-light-scattering-150090/)
 
 ## Mediterranean sunset performance
 
 At 3840×2160, 100% render scale and 4× cloud motion, the RTX 2080 SUPER measured 4.20 ms per GPU frame with the original sky, 5.71 ms with 1.3.0, and 6.55 ms with 1.4.0. These are medians of 24 one-second GPU averages after warm-up at the same forward-direction starting grid on track 34. All runs used the same car with frame capture disabled.
+
+An A/B test against 1.4.1 on the same RTX 2080 SUPER at 4K, 100% scale and 4× cloud speed measured 6.205 → 6.515 ms on track 34 and 10.415 → 10.555 ms on track 61. Values are medians of one-second GPU averages after warm-up, with capture disabled.
 
 ## Credits
 
