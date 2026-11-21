@@ -457,7 +457,7 @@
 +    }
 +    static const auto epoch=std::chrono::steady_clock::now();
 +    weatherTime=std::chrono::duration<float>(std::chrono::steady_clock::now()-epoch).count();
-+    if (tileReserved && (scene_profile==1 || scene_profile==5 || scene_profile==6 || scene_profile==9))
++    if (tileReserved && (scene_profile==1 || scene_profile==5 || scene_profile==6 || scene_profile==9 || scene_profile==10))
 +        update_cloud_towers(weatherTime*cloudTimeScale,scene_profile,0);
 +    for (unsigned view=1;view<=3;view++)
 +        packedSun[view]=visible[view]?cloudSunForView(frame,view,getenv("HP2_SKYPROBE") && g.frame%60==0):0;
@@ -647,7 +647,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_march.glsl
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,122 @@
 +vec3 cloud_sky(vec3 ray,float qualitySteps) {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
 +    RegionCloud c = cloudProfile(region);
@@ -660,6 +660,22 @@
 +    vec3 sky = mix(c.horizon,c.zenith,(day ? (1.-exp(-4.*elevation))/.9817 : sqrt(elevation)));
 +    if (day) sky += vec3(.19,.157,.108)*pow(facing,20.);
 +    if (rd.y < -.035) return sky;
++    float weather = weatherAt(rd,region,c);
++    bool dusk=sunset(region);
++    float lowSun=1.-smoothstep(.14,.64,sun.y);
++    float warm=dusk ? lowSun*smoothstep(-.065,.025,sun.y) : 0.;
++    vec3 ember=mix(vec3(.99,.63,.39),vec3(.99,.38,.24),lowSun);
++    vec3 gold=mix(vec3(1.,.84,.61),vec3(1.,.73,.38),lowSun);
++    if (dusk) {
++        float glow=warm*pow(facing,4.)*exp(-3.4*elevation);
++        sky=mix(sky,gold,glow*.28);
++        float cover=highCloudOpacity(rd,region,c,weather);
++        float rim=1.-smoothstep(.24,.73,cover);
++        vec3 litSheet=mix(ember,gold,clamp(.25+.46*facing+.34*rim,0.,1.));
++        vec3 sheet=mix(mix(c.ambient,c.lit,.46),litSheet,warm);
++        sheet=mix(sheet,c.ambient,.32*smoothstep(.43,.73,cover)*(1.-.62*facing));
++        sky=mix(sky,sheet,cover);
++    }
 +    float start = shellExit(rd,200.+c.shape.x);
 +    float end = min(shellExit(rd,200.+c.shape.x+c.shape.y),65.);
 +    if (end <= start) return sky;
@@ -673,7 +689,6 @@
 +        float veil = smoothstep(.46,.84,.62*ripples.z+.38*ripples.x) * smoothstep(.10,.48,rd.y);
 +        sky = mix(sky,vec3(.79,.84,.89),veil*(.07+.15*pow(facing,5.)));
 +    }
-+    float weather = weatherAt(rd,region,c);
 +    if (!towers && weather<=.016) {
 +        vec3 shaft=qualitySteps>0. ? cloudShafts(rd,sun,c,region,airEnd,front,back,1.) : vec3(0.);
 +        return sky+shaft*(1.-.45*sky);
@@ -684,7 +699,7 @@
 +    float quality = clamp(abs(qualitySteps)/36.,.28,2.7);
 +    // Keep short steps at grazing angles where the cloud base can reveal layers.
 +    // At higher elevations sunset lobes need fewer samples to resolve their silhouette.
-+    float ds = (region == 5 ? mix(.039, .061, smoothstep(.025,.32,elevation)) : .039) / quality;
++    float ds = (dusk ? mix(.039, .061, smoothstep(.025,.32,elevation)) : .039) / quality;
 +    const int samplesPerBlock = 2;
 +    float blockLength = ds*float(samplesPerBlock);
 +    float extinction = c.optical.y * (towers ? 1.44 : 1.12);
@@ -731,6 +746,16 @@
 +        float diffuse = clamp(.075+.81*shadow+.39*smoothstep(.10,.79,h),0.,1.);
 +        float edge = (1.-smoothstep(.10,.97,d))*sqrt(shadow);
 +        vec3 colour = mix(c.ambient,c.lit,diffuse)+c.lit*edge*(.15+.57*nearSun)*c.optical.z;
++        if (dusk) {
++            // Only cloud reached by direct sunlight can burn orange. Edge
++            // transmission peaks toward the sun; dense cores keep skylight.
++            float underside=(1.-smoothstep(.15,.60,h))*shadow;
++            float side=shadow*(.62+.38*sqrt(facing));
++            vec3 sunlight=mix(ember,gold,clamp(.22+.57*edge+.34*facing,0.,1.));
++            vec3 duskColour=mix(c.ambient,sunlight,clamp(.09+.79*side+.30*underside,0.,1.));
++            duskColour+=gold*(.19+.47*nearSun)*edge;
++            colour=mix(colour,duskColour,warm);
++        }
 +        sum += trans*alpha*min(colour,vec3(1.07));
 +        float nextTrans=trans*transmitted;
 +        if (trans>=.90 && nextTrans<.90) front=min(airEnd,a+dsBlock*depthMean/alpha);
@@ -747,7 +772,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_sunlight.glsl
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,104 @@
 +// Coordinates on a plane normal to sunlight. Transmittance stays constant
 +// along a parallel light ray in the clear air below the cloud shell.
 +const float lightExtent = 16.;
@@ -845,12 +870,16 @@
 +    }
 +    float depth=1.-exp(-.58*path);
 +    vec3 lightColour=mix(c.lit,vec3(1.,.86,.63),daylight(region)?.38:.14);
++    if (sunset(region)) {
++        float warm=1.-smoothstep(.14,.64,sun.y);
++        lightColour=mix(lightColour,vec3(1.,.68,.32),warm)*(1.-highCloudOpacity(sun,region,c,weatherAt(sun,region,c)));
++    }
 +    return lightColour*(.78*phase*depth*sum/float(slices));
 +}
 +#endif
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_volume.glsl
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,193 @@
 +struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
 +const RegionCloud regions[10] = RegionCloud[10](
 +RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
@@ -896,7 +925,12 @@
 +    a.xz-=travel*(phase-.5);
 +    b.xz-=travel*(fract(phase+.5)-.5);
 +    float w=.5-.5*cos(phase*6.2831853);
-+    return mix(sampleWeather(b,region),sampleWeather(a,region),w);
++    float authored=mix(sampleWeather(b,region),sampleWeather(a,region),w);
++    if (region==1) return .42+.55*authored; // Parkland: an unbroken, low ceiling.
++    if (region==2) return smoothstep(.10,.87,authored); // Desert: isolated fair-weather fragments.
++    if (region==3) return smoothstep(.03,.89,authored); // Broken front with blue gaps.
++    if (region==7) return .10+.81*authored; // Alpine dusk: a mid-level bank.
++    return authored;
 +}
 +
 +// A 40^3 tileable volume occupies spare GBA channels of the weather texture.
@@ -912,7 +946,20 @@
 +    return mix(a, b, fract(voxel.z));
 +}
 +bool daylight(int region) { return region == 0 || region == 4 || region == 8; }
-+bool cumulus(int region) { return daylight(region) || region == 5; }
++bool cumulus(int region) { return daylight(region) || region == 5 || region == 9; }
++bool sunset(int region) { return region == 5 || region == 7 || region == 9; }
++// A high, independently advected broken sheet. Its optical depth is shared by
++// the background sky, solar disc and the shafts underneath the low clouds.
++float highCloudOpacity(vec3 ray, int region, RegionCloud c, float authored) {
++    if (!sunset(region) || ray.y < -.035) return 0.;
++    vec3 at=ray*shellExit(ray,205.);
++    vec2 p=at.xz - cloudWind(region,c)*(.57*cloudTime());
++    vec3 coord=vec3(.17*p.x,.43,.29*p.y)+vec3(c.motion.z*.03,0.,0.);
++    vec3 base=shapeAt(coord);
++    vec3 ripple=shapeAt(coord*2.4+vec3(.002,-.0007,.001)*cloudTime());
++    return smoothstep(.27,.68,.29*base.x+.16*base.y+.25*ripple.z+.30*authored)
++         * smoothstep(-.035,.055,ray.y)*(region==7?.72:region==9?.61:.73);
++}
 +RegionCloud cloudProfile(int region) {
 +    RegionCloud c = regions[region];
 +    if (daylight(region)) {
@@ -922,6 +969,14 @@
 +        c.lit = vec3(1.0, .979, .927);
 +        c.ambient = vec3(.29, .356, .465);
 +    }
++    if (region==0) { c.horizon=mix(c.horizon,regions[0].horizon,.23); c.lit=vec3(1.,.966,.865); }
++    if (region==8) { c.horizon=mix(c.horizon,regions[8].horizon,.34); c.ambient=vec3(.27,.36,.41); }
++    if (region==1) { c.shape.x*=.83; c.shape.y*=.72; c.motion.w=1.7; c.ambient=vec3(.24,.275,.30); }
++    if (region==2) { c.shape.y*=.82; c.shape.z*=1.65; c.lit=vec3(1.,.89,.68); }
++    if (region==3) { c.shape.y*=1.12; c.motion.w=1.38; c.lit=vec3(.87,.86,.78); }
++    if (region==6) { c.motion.w=4.7; c.shape.y*=.81; }
++    if (region==7) { c.shape.y*=1.17; c.motion.w=2.25; c.ambient=vec3(.24,.20,.31); }
++    if (region==9) { c.shape.x*=.67; c.shape.y*=1.61; c.ambient=vec3(.26,.32,.42); }
 +    if (region == 5) {
 +        // Mediterranean sunset: leave the track's sky gradient intact and
 +        // separate the sunlit lobes from their cooler, shaded undersides.
@@ -1000,6 +1055,7 @@
 +                           + h*vec3(.085,0.,-.053));
 +    // Broad masses fix the cloud silhouette, rounded cells raise individual towers.
 +    float core = .63*field.x + .37*field.y;
++    if (region==6) core=.34*field.x+.66*field.z; // Wispy alpine ice cloud.
 +    float roof = clamp(.12 + .82*core + .26*field.y + .18*v.cover, .12, 1.);
 +    float vertical = smoothstep(.0,.085,h) * (1.0-smoothstep(roof*.70, roof,h));
 +    float body = core + .37*v.cover - .49;
@@ -1011,7 +1067,10 @@
 +        body += .035*(field.z-.5);
 +    }
 +    float density = smoothstep(-.035,.19,body) * vertical;
-+    if (region == 6) density *= .44;
++    if (region==1) density=mix(density,vertical*.80,.34);
++    if (region==3) density*=.75+.41*field.x;
++    if (region==6) density*=.50*(.48+.75*field.z);
++    if (region==7) density*=.90+.22*field.y;
 +    return density * (1.22 + .46*field.y) * smoothstep(.016,.18,v.cover);
 +}
 --- a/recomp/runtime/shaders/native.frag
@@ -1110,7 +1169,7 @@
  invariant gl_Position;
  
  const int COLOUR = 0, DIR = 4, EYE = 12, ENV = 14, MAT = 18, QUADS = 22;
-@@ -205,8 +207,39 @@
+@@ -205,8 +207,40 @@
      }
  }
  
@@ -1130,7 +1189,8 @@
 +    float end = min(shellExit(sun,200.+c.shape.x+c.shape.y),65.);
 +    if (end <= start) return 1.;
 +    float weather = weatherAt(sun,region,c);
-+    if (!cumulus(region) && weather <= .016) return 1.;
++    float highTrans=1.-highCloudOpacity(sun,region,c,weather);
++    if (!cumulus(region) && weather <= .016) return highTrans;
 +    Volume v = cloudVolume(region,c,weather);
 +    const int taps = 20;
 +    float dt = (end-start)/float(taps), depth = 0.;
@@ -1139,7 +1199,7 @@
 +        depth += cloudDensity(p,v,heightAt(p,v),true,region)*dt;
 +    }
 +    float direct = exp(-depth*c.optical.y*(cumulus(region) ? 1.44 : 1.12));
-+    return mix(1.,direct,smoothstep(-.035,.045,sun.y));
++    return highTrans*mix(1.,direct,smoothstep(-.035,.045,sun.y));
 +}
 +
 +
@@ -1150,7 +1210,7 @@
      mat4 clip = u.clip;
      int light = u.light;
      if (u.merged != 0) {
-@@ -242,6 +275,13 @@
+@@ -242,6 +276,13 @@
          vec2 px = (gl_Position.xy / gl_Position.w + 1.0) * u.snap;
          px = floor(px * 16.0 + 0.5) / 16.0;
          gl_Position.xy = (px / u.snap - 1.0) * gl_Position.w;
