@@ -53,13 +53,13 @@ Thirty track texture archives resolve to ten sky profiles. The original panorama
 | Alpine | 41–43 · thin, wind-stretched high cloud | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
 | Tropical | 61–63 · humid horizon and cooler cumulus bases | 64–66 · gold broken cloud above island cumulus, with blue sky between |
 
-The low sun's elevation changes the direct light colour. Local shadowing preserves cool interiors while illuminated undersides and thin edges can glow. The high layer has its own motion and attenuates the sun and the shafts below. The original sky launcher remains available.
+The low sun's elevation changes the direct light colour. Local shadowing preserves cool interiors while illuminated undersides and thin edges can glow. The upper layer follows its own wind on a curved shell. Mediterranean cloud breaks into rounded patches, Alpine bands stretch into wisps, and the tropical sky shows larger gaps. Local cloud thickness toward the sun controls the peach and gold highlights. The same opacity attenuates the sun and the shafts below. The original sky launcher remains available.
 
 Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.int/en/appearance-of-clouds-colour.html) · [NASA Earth Observatory on crepuscular rays](https://science.nasa.gov/earth/earth-observatory/crepuscular-rays-and-light-scattering-150090/)
 
 ## Mediterranean sunset performance
 
-At 3840×2160, 100% render scale and 4× cloud motion, the RTX 2080 SUPER measured 4.19 ms per GPU frame with the original sky, 5.78 ms with 1.3.0, and 6.32 ms with 1.4.0. These are medians of 24 one-second GPU averages after warm-up at the same starting-grid position on track 34. All runs used the same car with frame capture disabled.
+At 3840×2160, 100% render scale and 4× cloud motion, the RTX 2080 SUPER measured 4.20 ms per GPU frame with the original sky, 5.71 ms with 1.3.0, and 6.55 ms with 1.4.0. These are medians of 24 one-second GPU averages after warm-up at the same forward-direction starting grid on track 34. All runs used the same car with frame capture disabled.
 
 ## Credits
 
