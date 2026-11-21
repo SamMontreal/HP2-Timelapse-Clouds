@@ -1961,7 +1961,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_ground.frag
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,55 @@
 +#version 450
 +#extension GL_GOOGLE_include_directive : require
 +layout(push_constant) uniform Push {
@@ -2006,10 +2006,16 @@
 +    if (dot(n,ray)>0.) n=-n;
 +    // Only the cloud transmission attenuates sunlight. Nearby depth from a car or guardrail
 +    // cannot cast a second, camera-dependent shadow onto the road.
-+    float lit=transmission(column*(metres*.001));
-+    float incident=max(0.,dot(n,sun));
++    // The distant terrain is painted on a coarse mesh. Its triangle normals and
++    // artificial depth would stamp polygon edges into the moving cloud shadow.
++    // Blend to a common sky exposure sampled along the view ray at a fixed range.
++    float backdrop=smoothstep(250.,600.,metres);
++    float sampleKm=mix(metres*.001,.50,backdrop);
++    float lit=transmission(column*sampleKm);
++    float incident=mix(max(0.,dot(n,sun)),max(sun.y,0.),backdrop);
 +    vec3 factor=sqrt(surfaceIrradiance(incident*lit,day)/surfaceIrradiance(incident,day));
-+    outLight=vec4(.5*mix(vec3(1.),factor,1.-smoothstep(7000.,12000.,metres)),1.);
++    float weight=mix(1.,.45,backdrop)*(1.-smoothstep(7000.,12000.,metres));
++    outLight=vec4(.5*mix(vec3(1.),factor,weight),1.);
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/smoke_composite.frag

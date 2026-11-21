@@ -61,7 +61,7 @@ Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.i
 
 ## Track lighting
 
-Version 1.4.8 restores directional sunlight on roads. Asphalt and paving use the original textured and vertex-lit surface as their base. Sunlight follows the surface slope, and the cloud transmission map controls how much reaches the road. Baked shadows, vehicle shadows and the 1.4.4 island sky are preserved. Sky shafts use HP2_CLOUD_SHAFTS and surface lighting uses HP2_CLOUD_GROUND independently. During a police-enabled race, the cloud runtime starts HP2-ShiftLight.exe if it is installed beside the game's speed.exe.
+Version 1.4.9 fixes the triangular shading on distant mountains when a cloud darkens the scene. The painted ridgeline follows the passing cloud cover with a continuous change in brightness. Nearby roads still receive slope-dependent sunlight and moving cloud shadows over the original texture and baked lighting. Sky shafts use HP2_CLOUD_SHAFTS and surface lighting uses HP2_CLOUD_GROUND independently. During a police-enabled race, the cloud runtime starts HP2-ShiftLight.exe if it is installed beside the game's speed.exe.
 
 The original tyre particle renderer is the default. The experimental compositor can be selected with HP2_EXPERIMENTAL_SMOKE=1.
 
