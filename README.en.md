@@ -1,6 +1,6 @@
 # HP2 Timelapse Clouds
 
-Regional volumetric clouds for ZloiKILLER's Windows port of the PS2 edition of Need for Speed: Hot Pursuit 2. The default mode plays 20 seconds of cloud motion in five seconds. Clear daytime tracks feature cumulus with shaded bases, bright sun-facing edges and a thin upper layer. On the Mediterranean sunset tracks, distinct cumulus banks catch peach light above a shaded base. Ten regional profiles control cloud distribution and lighting. The sun and its halo dim as dense clouds cross them.
+Regional volumetric clouds for ZloiKILLER's Windows port of the PS2 edition of Need for Speed: Hot Pursuit 2. The default mode plays 20 seconds of cloud motion in five seconds. Clear daytime tracks feature cumulus with shaded bases and bright sun-facing edges. On the Mediterranean sunset tracks, distinct cumulus banks catch peach light above a shaded base. Ten regional profiles control cloud distribution and lighting. The sun and its halo dim as dense clouds cross them.
 
 ## Install and play
 
@@ -49,11 +49,11 @@ Thirty track texture archives resolve to ten sky profiles. The original panorama
 | --- | --- | --- |
 | Parkland | 11–13 · broken, warm-white cumulus | 14–16 · a low overcast deck with a dark base |
 | Desert | 21–23 · scattered pale-gold fragments | 24–26 · thicker broken banks with blue gaps |
-| Mediterranean | 31–33 · maritime cumulus against blue sky | 34–36 · rolling banks beneath broken higher cloud, orange sunlit faces and gold edges |
-| Alpine | 41–43 · thin, wind-stretched high cloud | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
-| Tropical | 61–63 · humid horizon and cooler cumulus bases | 64–66 · gold broken cloud above island cumulus, with blue sky between |
+| Mediterranean | 31–33 · maritime cumulus against blue sky | 34–36 · rolling cumulus banks, orange sunlit faces and gold edges |
+| Alpine | 41–43 · open sky above the mountains | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
+| Tropical | 61–63 · humid horizon and cooler cumulus bases | 64–66 · gold-lit island cumulus with blue sky between banks |
 
-The low sun's elevation changes the direct light colour. Local shadowing preserves cool interiors while illuminated undersides and thin edges can glow. The upper layer follows its own wind on a curved shell. Mediterranean cloud breaks into rounded patches, Alpine bands stretch into wisps, and the tropical sky shows larger gaps. Local cloud thickness toward the sun controls the peach and gold highlights. The same opacity attenuates the sun and the shafts below. The original sky launcher remains available.
+The low sun's elevation changes the direct light colour. Local shadowing preserves cool interiors while illuminated undersides and thin edges can glow. Version 1.4.1 removes the added high-cloud layer across all tracks. Alpine daytime now shows the sky gradient and sun. On the other tracks the lower weather systems still control cloud cover. Local cloud thickness toward the sun controls the peach and gold highlights. The same opacity attenuates the sun and the shafts below. The original sky launcher remains available.
 
 Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.int/en/appearance-of-clouds-colour.html) · [NASA Earth Observatory on crepuscular rays](https://science.nasa.gov/earth/earth-observatory/crepuscular-rays-and-light-scattering-150090/)
 

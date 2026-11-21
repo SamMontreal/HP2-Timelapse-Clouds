@@ -647,7 +647,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_march.glsl
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,110 @@
 +vec3 cloud_sky(vec3 ray,float qualitySteps) {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
 +    RegionCloud c = cloudProfile(region);
@@ -659,7 +659,7 @@
 +    bool towers = cumulus(region);
 +    vec3 sky = mix(c.horizon,c.zenith,(day ? (1.-exp(-4.*elevation))/.9817 : sqrt(elevation)));
 +    if (day) sky += vec3(.19,.157,.108)*pow(facing,20.);
-+    if (rd.y < -.035) return sky;
++    if (rd.y < -.035 || region==6) return sky; // Alpine daylight has no low deck.
 +    float weather = weatherAt(rd,region,c);
 +    bool dusk=sunset(region);
 +    float lowSun=1.-smoothstep(.14,.64,sun.y);
@@ -669,19 +669,6 @@
 +    if (dusk) {
 +        float glow=warm*pow(facing,4.)*exp(-3.4*elevation);
 +        sky=mix(sky,gold,glow*.28);
-+    }
-+    if (day || dusk) {
-+        vec2 layer=highCloudLayer(rd,region,c,sun.xz,dusk);
-+        vec3 sheet=vec3(.80,.85,.90);
-+        if (dusk) {
-+            float edge=1.-smoothstep(.12,.57,layer.x);
-+            vec3 shade=mix(c.ambient,sky,.18);
-+            vec3 rose=mix(c.lit,vec3(1.,.55,.40),warm*.73);
-+            vec3 glint=mix(rose,gold,warm*clamp(.54*facing+.62*layer.y,0.,1.));
-+            float direct=smoothstep(.09,.91,layer.y+.17*edge+.12*facing);
-+            sheet=mix(shade,glint,mix(.37,direct,warm));
-+        }
-+        sky=mix(sky,sheet,layer.x);
 +    }
 +    float start = shellExit(rd,200.+c.shape.x);
 +    float end = min(shellExit(rd,200.+c.shape.x+c.shape.y),65.);
@@ -789,6 +776,7 @@
 +    return lightExtent*s*(.30+.70*abs(s));
 +}
 +float solarColumn(vec2 q, vec3 sun, RegionCloud c, int region) {
++    if (region==6) return 1.;
 +    vec3 side=sunSide(sun);
 +    vec3 origin=q.x*side + q.y*cross(side,sun);
 +    vec3 radial=origin+vec3(0.,200.,0.);
@@ -875,13 +863,12 @@
 +        float warm=1.-smoothstep(.14,.64,sun.y);
 +        lightColour=mix(lightColour,vec3(1.,.68,.32),warm);
 +    }
-+    if (sunset(region) || daylight(region)) lightColour*=1.-highCloudLayer(sun,region,c,vec2(0.),false).x;
 +    return lightColour*(.78*phase*depth*sum/float(slices));
 +}
 +#endif
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_volume.glsl
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,178 @@
 +struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
 +const RegionCloud regions[10] = RegionCloud[10](
 +RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
@@ -950,39 +937,6 @@
 +bool daylight(int region) { return region == 0 || region == 4 || region == 8; }
 +bool cumulus(int region) { return daylight(region) || region == 5 || region == 9; }
 +bool sunset(int region) { return region == 5 || region == 7 || region == 9; }
-+// The first component is opacity for compositing, the sun and the air below.
-+// The second measures local exposure toward the sun, evaluated only for shading.
-+vec2 highCloudLayer(vec3 ray, int region, RegionCloud c, vec2 sunXZ, bool shade) {
-+    bool dusk = sunset(region);
-+    if ((!dusk && !daylight(region)) || ray.y < -.02) return vec2(0.);
-+    bool alpine = region == 7, tropical = region == 9;
-+    float radius = alpine ? 205.8 : (tropical ? 207.2 : 206.5);
-+    vec2 wind = cloudWind(region,c);
-+    vec2 along = normalize(wind + .35*vec2(-wind.y,wind.x));
-+    vec2 across = vec2(-along.y,along.x);
-+    vec2 pos = ray.xz*shellExit(ray,radius) - wind*(.61*cloudTime());
-+    vec2 km = vec2(dot(pos,along),dot(pos,across));
-+    vec2 broadScale = alpine ? vec2(.020,.050) : vec2(.040,.078);
-+    vec3 seed = vec3(.031,.017,.047)*c.motion.z;
-+    vec3 broadUV = vec3(km.x*broadScale.x,.22,km.y*broadScale.y)+seed;
-+    vec3 bank = shapeAt(broadUV);
-+    vec2 fineScale = dusk && !alpine ? vec2(.092,.19) : vec2(.039,.22);
-+    vec2 bent = km*fineScale + .53*(bank.xy-.5);
-+    vec3 grain = shapeAt(vec3(bent.x,.36+.30*bank.x+.00032*cloudTime(),bent.y)+seed.yzx);
-+    float outline = .53*bank.x + .29*bank.y + .18*sampleWeather(ray,region);
-+    float detail = .48*grain.x + .52*grain.y;
-+    float mass = outline + (dusk && !alpine ? .56 : .34)*(detail-.5);
-+    float alpha = smoothstep(alpine ? .32 : .34, alpine ? .66 : .63,mass)
-+                * smoothstep(-.02,.067,ray.y);
-+    alpha *= dusk ? (alpine ? .69 : (tropical ? .65 : .77)) : .18;
-+    float exposure = 0.;
-+    if (shade && dusk && alpha>.003) {
-+        vec2 light = vec2(dot(sunXZ,along),dot(sunXZ,across))*broadScale;
-+        float sunward = shapeAt(broadUV+vec3(light.x,0.,light.y)*1.45).x;
-+        exposure = clamp(.51 + 2.85*(bank.x-sunward) + .94*(.5-detail),0.,1.);
-+    }
-+    return vec2(alpha,exposure);
-+}
 +RegionCloud cloudProfile(int region) {
 +    RegionCloud c = regions[region];
 +    if (daylight(region)) {
@@ -997,7 +951,6 @@
 +    if (region==1) { c.shape.x*=.83; c.shape.y*=.72; c.motion.w=1.7; c.ambient=vec3(.24,.275,.30); }
 +    if (region==2) { c.shape.y*=.82; c.shape.z*=1.65; c.lit=vec3(1.,.89,.68); }
 +    if (region==3) { c.shape.y*=1.12; c.motion.w=1.38; c.lit=vec3(.87,.86,.78); }
-+    if (region==6) { c.motion.w=4.7; c.shape.y*=.81; }
 +    if (region==7) { c.shape.y*=1.17; c.motion.w=2.25; c.ambient=vec3(.24,.20,.31); }
 +    if (region==9) { c.shape.x*=.67; c.shape.y*=1.61; c.ambient=vec3(.26,.32,.42); }
 +    if (region == 5) {
@@ -1072,21 +1025,12 @@
 +    if (h <= 0. || h >= 1.) return 0.;
 +    if (cumulus(region)) return towerDensity(p,v,h,detail);
 +    vec3 q = p*v.frequency + v.seed;
-+    if (region==6) {
-+        // The Alpine panorama has curved filaments in the prevailing wind.
-+        vec2 wind=cloudWind(6,regions[6]), along=normalize(wind);
-+        vec2 km=p.xz-wind*v.evolution;
-+        q.xz=vec2(dot(km,along)*.042,dot(km,vec2(-along.y,along.x))*.25)
-+             + vec2(regions[6].motion.z*.173,regions[6].motion.z*.119);
-+        q.z+=.11*sin(q.x*4.1+h*.87);
-+    }
 +    // Outside the cumulus regions, differential flow lifts broad masses while
 +    // their finer erosion follows another velocity. The base remains steadier.
 +    vec3 field = shapeAt(q + vec3(.00061,-.0024,.00082)*v.evolution
 +                           + h*vec3(.085,0.,-.053));
 +    // Broad masses fix the cloud silhouette, rounded cells raise individual towers.
 +    float core = .63*field.x + .37*field.y;
-+    if (region==6) core=.34*field.x+.66*field.z; // Wispy alpine ice cloud.
 +    float roof = clamp(.12 + .82*core + .26*field.y + .18*v.cover, .12, 1.);
 +    float vertical = smoothstep(.0,.085,h) * (1.0-smoothstep(roof*.70, roof,h));
 +    float body = core + .37*v.cover - .49;
@@ -1100,7 +1044,6 @@
 +    float density = smoothstep(-.035,.19,body) * vertical;
 +    if (region==1) density=mix(density,vertical*.80,.34);
 +    if (region==3) density*=.75+.41*field.x;
-+    if (region==6) density*=.50*(.48+.75*field.z);
 +    if (region==7) density*=.90+.22*field.y;
 +    return density * (1.22 + .46*field.y) * smoothstep(.016,.18,v.cover);
 +}
@@ -1213,6 +1156,7 @@
 +layout(location=8) flat out float sunVisibility;
 +float sunTransmission() {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
++    if (region==6) return 1.;
 +    RegionCloud c = cloudProfile(region);
 +    vec3 sun = cloudSunDirection(c);
 +    if (sun.y < -.035) return 1.;
@@ -1220,8 +1164,7 @@
 +    float end = min(shellExit(sun,200.+c.shape.x+c.shape.y),65.);
 +    if (end <= start) return 1.;
 +    float weather = weatherAt(sun,region,c);
-+    float highTrans=1.-highCloudLayer(sun,region,c,vec2(0.),false).x;
-+    if (!cumulus(region) && weather <= .016) return highTrans;
++    if (!cumulus(region) && weather <= .016) return 1.;
 +    Volume v = cloudVolume(region,c,weather);
 +    const int taps = 20;
 +    float dt = (end-start)/float(taps), depth = 0.;
@@ -1230,7 +1173,7 @@
 +        depth += cloudDensity(p,v,heightAt(p,v),true,region)*dt;
 +    }
 +    float direct = exp(-depth*c.optical.y*(cumulus(region) ? 1.44 : 1.12));
-+    return highTrans*mix(1.,direct,smoothstep(-.035,.045,sun.y));
++    return mix(1.,direct,smoothstep(-.035,.045,sun.y));
 +}
 +
 +
