@@ -1,8 +1,8 @@
 # HP2 Timelapse Clouds
 
-Regional volumetric clouds for HP2 Recomp 0.14. Version 1.4.2 restores the 1.3.0 daytime skies, retains the three sunset profiles, and brings moving cloud shadows and light through cloud gaps onto the track. Version 1.4.3 gives the thin clouds on Alpine daytime tracks 41–43 clearer sunlit edges and faster deformation within each cloud. Opaque track surfaces use real-time, cloud-occluded sunlight. Version 1.4.4 adds depth-tested near-ground light scattering and extends moving cloud shadows to bridge decks and other opaque scenery. Version 1.4.5 restores the original distant Palm City Island skyline behind a shallow tropical cloud layer. The default launcher uses 4× cloud speed.
+Version 1.4.6 uses the 1.4.4 island sky. Sunlight and moving cloud shadows still light roads, bridges and opaque scenery. The near-ground air-scattering pass has been removed. Sky shafts use HP2_CLOUD_SHAFTS and surface lighting uses HP2_CLOUD_GROUND independently. During a police-enabled race, the cloud runtime starts HP2-ShiftLight.exe if it is installed beside the game's speed.exe.
 
-《极品飞车：热力追踪 2》PS2 重编译版 0.14 体积云模组。1.4.2 恢复 1.3.0 的非黄昏天空，保留三组黄昏云，新增赛道地面的移动云影和近地光束。1.4.3 调整 41–43 号秋山白天的薄云。云块之间留出空隙，受光边缘更清晰，细碎边缘和云身按不同速度变形。不透明赛道路面采用实时太阳光照。1.4.4 增强近地体积光，桥面和其他可见不透明场景也会随云层透光率变化。1.4.5 将 Palm City Island 的原版远景与热带海洋低云结合。默认四倍云速。
+1.4.6 沿用 1.4.4 的海岛天空。道路、桥面和不透明场景继续随太阳方向和移动云影受光，取消了近地空气散射。HP2_CLOUD_SHAFTS 控制天空光束，HP2_CLOUD_GROUND 独立控制地面动态照明。进入有警力的赛事时，体积云程序会自动启动游戏根目录中已安装的 HP2-ShiftLight.exe。
 
 [简体中文安装与构建说明](README.zh-CN.md) · [English installation and build guide](README.en.md)
 

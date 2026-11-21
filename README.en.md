@@ -51,21 +51,17 @@ Thirty track texture archives resolve to ten sky profiles. The original panorama
 | Desert | 21–23 · 1.3.0 first desert sky | 24–26 · 1.3.0 second desert sky |
 | Mediterranean | 31–33 · maritime cumulus against blue sky | 34–36 · rolling cumulus banks, orange sunlit faces and gold edges |
 | Alpine | 41–43 · thin autumn clouds with distinct, evolving sunlit edges | 44–46 · a purple-grey mid-level bank and warm, illuminated edges |
-| Tropical | 61–63 · low trade cumulus and the original distant island sky | 64–66 · gold-lit island cumulus with blue sky between banks |
+| Tropical | 61–63 · humid horizon and cooler cumulus bases | 64–66 · gold-lit island cumulus with blue sky between banks |
 
-Version 1.4.2 restores the sky rendering from 1.3.0 on the seven non-sunset profiles, including autumn mountain tracks 41–43. The Mediterranean, Alpine and tropical sunset profiles retain their directional lighting. Cloud transmittance now shades the baked light on opaque race geometry. Light scattered through nearby cloud gaps is integrated up to the visible surface using its depth. Set HP2_CLOUD_GROUND=0 to compare with the original surface lighting. HP2_CLOUD_SHAFTS=0 also turns off near-ground scattering while retaining surface cloud shadows.
+Version 1.4.2 restores the sky rendering from 1.3.0 on the seven non-sunset profiles, including autumn mountain tracks 41–43. The Mediterranean, Alpine and tropical sunset profiles retain their directional lighting. Cloud transmittance now shades the baked light on opaque race geometry. Set HP2_CLOUD_GROUND=0 to compare with the original surface lighting. HP2_CLOUD_SHAFTS=0 turns off sky shafts.
 
 Version 1.4.3 gives the thin clouds on Alpine daytime tracks 41–43 clearer sunlit edges and faster deformation within each cloud. Opaque textured road and track surfaces in the main race view now use real-time diffuse sunlight from the surface normal, the game sun and the current cloud transmission. The original diffuse texture supplies the material colour. Shading painted directly into the texture can remain visible. The sun disc and flare use the cloud shadow at the camera. HP2_CLOUD_GROUND=0 restores the original surface shading.
 
 Atmospheric references: [WMO International Cloud Atlas](https://cloudatlas.wmo.int/en/appearance-of-clouds-colour.html) · [NASA Earth Observatory on crepuscular rays](https://science.nasa.gov/earth/earth-observatory/crepuscular-rays-and-light-scattering-150090/)
 
-## Palm City Island daytime sky
-
-Palm City Island and the other tracks using its daytime textures (61–63) have a shallow trade-wind cumulus layer. Its model envelope starts at 0.70 km and ends at 2.50 km. Individual clouds occupy part of that depth. The 1× horizontal advection speed is 9 m/s, and the default 4× launcher advances the weather clock four times as fast. The heights and wind speed use observations in the tropical Atlantic as a regional analogue. The original sky panorama and cap supply the distant cloud banks and clear-sky colour. Moving foreground clouds attenuate that background and contribute to the solar transmission used on the track. [Nuijens et al. (2015)](https://agupubs.onlinelibrary.wiley.com/doi/10.1002/2015MS000483) · [Vogel et al. (2022)](https://pmc.ncbi.nlm.nih.gov/articles/PMC9771822/)
-
 ## Track lighting
 
-The 1.4.4 race renderer lights opaque roads, bridge decks and scenery using the surface orientation, the current sun and a map of sunlight passing through the moving clouds. The near-ground pass integrates illuminated air up to the first visible surface. Visible nearby geometry can block sunlight along that path. The effect varies with cloud cover, viewing direction and distance. Stock textures may still contain painted shadows. Use HP2_CLOUD_GROUND=0 to compare the original ground shading, or HP2_CLOUD_SHAFTS=0 to disable the air scattering and retain surface lighting.
+Version 1.4.6 uses the 1.4.4 island sky. Sunlight and moving cloud shadows still light roads, bridges and opaque scenery. The near-ground air-scattering pass has been removed. Sky shafts use HP2_CLOUD_SHAFTS and surface lighting uses HP2_CLOUD_GROUND independently. During a police-enabled race, the cloud runtime starts HP2-ShiftLight.exe if it is installed beside the game's speed.exe.
 
 The original tyre particle renderer is the default. The experimental compositor can be selected with HP2_EXPERIMENTAL_SMOKE=1.
 
