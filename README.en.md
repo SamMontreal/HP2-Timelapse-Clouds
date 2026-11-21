@@ -1,6 +1,6 @@
 # HP2 Timelapse Clouds
 
-Regional volumetric clouds for ZloiKILLER's Windows port of the PS2 edition of Need for Speed: Hot Pursuit 2. The default mode plays 20 seconds of cloud motion in five seconds. Clear daytime tracks feature cumulus with shaded bases, bright sun-facing edges and a thin upper layer. Ten regional profiles control cloud distribution and lighting. The sun and its halo dim as dense clouds cross them.
+Regional volumetric clouds for ZloiKILLER's Windows port of the PS2 edition of Need for Speed: Hot Pursuit 2. The default mode plays 20 seconds of cloud motion in five seconds. Clear daytime tracks feature cumulus with shaded bases, bright sun-facing edges and a thin upper layer. On the Mediterranean sunset tracks, distinct cumulus banks catch peach light above a shaded base. Ten regional profiles control cloud distribution and lighting. The sun and its halo dim as dense clouds cross them.
 
 ## Install and play
 
@@ -40,6 +40,10 @@ The three launchers share one runtime. They select cloud speed with HP2_CLOUD_SP
 ```powershell
 python package.py upstream/recompwin/speed-clouds.exe
 ```
+
+## Mediterranean sunset performance
+
+At 3840×2160, 100% render scale and 4× cloud motion, the RTX 2080 SUPER measured 4.19 ms per GPU frame with the original sky, 5.78 ms with 1.3.0, and 6.30 ms with 1.4.0. These are medians of 24 one-second GPU averages after warm-up at the same starting-grid position on track 34. All runs used the same car with frame capture disabled.
 
 ## Credits
 

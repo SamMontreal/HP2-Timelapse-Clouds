@@ -457,7 +457,7 @@
 +    }
 +    static const auto epoch=std::chrono::steady_clock::now();
 +    weatherTime=std::chrono::duration<float>(std::chrono::steady_clock::now()-epoch).count();
-+    if (tileReserved && (scene_profile==1 || scene_profile==5 || scene_profile==9))
++    if (tileReserved && (scene_profile==1 || scene_profile==5 || scene_profile==6 || scene_profile==9))
 +        update_cloud_towers(weatherTime*cloudTimeScale,scene_profile,0);
 +    for (unsigned view=1;view<=3;view++)
 +        packedSun[view]=visible[view]?cloudSunForView(frame,view,getenv("HP2_SKYPROBE") && g.frame%60==0):0;
@@ -647,7 +647,7 @@
 +}
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_march.glsl
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,97 @@
 +vec3 cloud_sky(vec3 ray,float qualitySteps) {
 +    int region = clamp((cloudRegion() & 15)-1,0,9);
 +    RegionCloud c = cloudProfile(region);
@@ -656,6 +656,7 @@
 +    float elevation = clamp(rd.y,0.,1.);
 +    float facing = max(mu,0.);
 +    bool day = daylight(region);
++    bool towers = cumulus(region);
 +    vec3 sky = mix(c.horizon,c.zenith,(day ? (1.-exp(-4.*elevation))/.9817 : sqrt(elevation)));
 +    if (day) sky += vec3(.19,.157,.108)*pow(facing,20.);
 +    if (rd.y < -.035) return sky;
@@ -673,7 +674,7 @@
 +        sky = mix(sky,vec3(.79,.84,.89),veil*(.07+.15*pow(facing,5.)));
 +    }
 +    float weather = weatherAt(rd,region,c);
-+    if (!day && weather<=.016) {
++    if (!towers && weather<=.016) {
 +        vec3 shaft=qualitySteps>0. ? cloudShafts(rd,sun,c,region,airEnd,front,back,1.) : vec3(0.);
 +        return sky+shaft*(1.-.45*sky);
 +    }
@@ -681,17 +682,19 @@
 +    // Integrate extinction at short, evenly spaced world distances. Sharing a
 +    // lighting evaluation across two samples keeps fine edge coverage affordable.
 +    float quality = clamp(abs(qualitySteps)/36.,.28,2.7);
-+    float ds = 0.039 / quality;
++    // Keep short steps at grazing angles where the cloud base can reveal layers.
++    // At higher elevations sunset lobes need fewer samples to resolve their silhouette.
++    float ds = (region == 5 ? mix(.039, .061, smoothstep(.025,.32,elevation)) : .039) / quality;
 +    const int samplesPerBlock = 2;
 +    float blockLength = ds*float(samplesPerBlock);
-+    float extinction = c.optical.y * (day ? 1.44 : 1.12);
++    float extinction = c.optical.y * (towers ? 1.44 : 1.12);
 +    float nearSun = pow(facing,9.);
 +    vec3 sum = vec3(0);
 +    float trans = 1.;
 +    int blockCount = int(ceil((end-start)/blockLength));
 +    for (int block=0; block<blockCount; ++block) {
 +        float a = start+float(block)*blockLength;
-+        if (day) {
++        if (towers) {
 +            float clearance = towerClearance(rd*a,v);
 +            int empty = int(floor(clearance/blockLength));
 +            if (empty > 0) {
@@ -737,7 +740,7 @@
 +    }
 +
 +    vec3 result = sum + trans*sky;
-+    float haze = (1.-exp(-max(start-3.,0.)*c.sun.w))*(day ? .44 : .64);
++    float haze = (1.-exp(-max(start-3.,0.)*c.sun.w))*(towers ? .44 : .64);
 +    vec3 background=mix(sky,mix(result,sky,haze),smoothstep(-.035,.045,rd.y));
 +    vec3 shafts=qualitySteps>0. ? cloudShafts(rd,sun,c,region,airEnd,front,back,trans) : vec3(0.);
 +    return background+shafts*(1.-.45*background);
@@ -773,15 +776,15 @@
 +    float range=length(middle);
 +    if (range>=65.) return 1.;
 +    float cover=weatherAt(middle/max(range,.001),region,c);
-+    bool day=daylight(region);
-+    if (!day && cover<=.016) return 1.;
++    bool towers=cumulus(region);
++    if (!towers && cover<=.016) return 1.;
 +    Volume volume=cloudVolume(region,c,cover);
-+    float extinction=c.optical.y*(day?1.44:1.12);
++    float extinction=c.optical.y*(towers?1.44:1.12);
 +    int n=clamp(int(ceil((z-a)/.145)),12,64);
 +    float stepSize=(z-a)/float(n),depth=0.;
 +    for (int i=0;i<n;i++) {
 +        vec3 p=origin+sun*(a+(float(i)+.5)*stepSize);
-+        if (day) {
++        if (towers) {
 +            int empty=int(floor(towerClearance(p,volume)/stepSize));
 +            if (empty>0) { i+=empty-1; continue; }
 +        }
@@ -847,7 +850,7 @@
 +#endif
 --- /dev/null
 +++ b/recomp/runtime/shaders/cloud_volume.glsl
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,163 @@
 +struct RegionCloud { vec4 shape; vec4 optical; vec4 motion; vec4 sun; vec3 zenith; vec3 horizon; vec3 lit; vec3 ambient; };
 +const RegionCloud regions[10] = RegionCloud[10](
 +RegionCloud(vec4(1.600000,1.350000,0.650000,1.000000),vec4(0.620000,1.900000,0.650000,0.650000),vec4(0.002000,0.000600,19.170000,1.000000),vec4(-0.9370426,0.3123475,0.1561738,0.0280000),vec3(0.274510,0.345098,0.376471),vec3(0.760784,0.811765,0.772549),vec3(0.933333,0.882353,0.729412),vec3(0.383765,0.418431,0.405176)),
@@ -909,6 +912,7 @@
 +    return mix(a, b, fract(voxel.z));
 +}
 +bool daylight(int region) { return region == 0 || region == 4 || region == 8; }
++bool cumulus(int region) { return daylight(region) || region == 5; }
 +RegionCloud cloudProfile(int region) {
 +    RegionCloud c = regions[region];
 +    if (daylight(region)) {
@@ -917,6 +921,14 @@
 +        c.horizon = vec3(.67, .80, .89);
 +        c.lit = vec3(1.0, .979, .927);
 +        c.ambient = vec3(.29, .356, .465);
++    }
++    if (region == 5) {
++        // Mediterranean sunset: leave the track's sky gradient intact and
++        // separate the sunlit lobes from their cooler, shaded undersides.
++        c.shape.y *= 1.68;
++        c.optical.y = 1.82;
++        c.lit = vec3(.99, .77, .61);
++        c.ambient = vec3(.30, .265, .33);
 +    }
 +    return c;
 +}
@@ -942,7 +954,7 @@
 +    v.invDepth = 1.0 / c.shape.y;
 +    // Daytime coverage guides the density threshold. A floor lets the 3D field
 +    // break through the dark parts of the authored panorama without a hard cut.
-+    v.cover = daylight(region) ? .23 + .57 * clamp(weather*c.shape.w,0.,1.)
++    v.cover = cumulus(region) ? .23 + .57 * clamp(weather*c.shape.w,0.,1.)
 +                               : clamp(weather*c.shape.w,0.,1.);
 +    return v;
 +}
@@ -980,7 +992,7 @@
 +
 +float cloudDensity(vec3 p, Volume v, float h, bool detail, int region) {
 +    if (h <= 0. || h >= 1.) return 0.;
-+    if (daylight(region)) return towerDensity(p,v,h,detail);
++    if (cumulus(region)) return towerDensity(p,v,h,detail);
 +    vec3 q = p*v.frequency + v.seed;
 +    // Outside the cumulus regions, differential flow lifts broad masses while
 +    // their finer erosion follows another velocity. The base remains steadier.
@@ -1118,7 +1130,7 @@
 +    float end = min(shellExit(sun,200.+c.shape.x+c.shape.y),65.);
 +    if (end <= start) return 1.;
 +    float weather = weatherAt(sun,region,c);
-+    if (!daylight(region) && weather <= .016) return 1.;
++    if (!cumulus(region) && weather <= .016) return 1.;
 +    Volume v = cloudVolume(region,c,weather);
 +    const int taps = 20;
 +    float dt = (end-start)/float(taps), depth = 0.;
@@ -1126,7 +1138,7 @@
 +        vec3 p = sun*(start+(float(i)+.5)*dt);
 +        depth += cloudDensity(p,v,heightAt(p,v),true,region)*dt;
 +    }
-+    float direct = exp(-depth*c.optical.y*(daylight(region) ? 1.44 : 1.12));
++    float direct = exp(-depth*c.optical.y*(cumulus(region) ? 1.44 : 1.12));
 +    return mix(1.,direct,smoothstep(-.035,.045,sun.y));
 +}
 +
