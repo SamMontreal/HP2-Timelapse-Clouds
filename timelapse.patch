@@ -91,14 +91,14 @@
      g_hud_prev.swap(now_verts);
  }
  
-+// Open the optional companion once when entering a police-enabled race.
-+static void open_pursuit_dashboard()
++// Start the installed dashboard once the player reaches the grid or can drive.
++static void open_race_dashboard()
 +{
 +#ifdef _WIN32
 +    static bool entered;
-+    const bool police_race=LW(0x330544)==6 && (s32)LW(0x31aaf4)>0 && LW(0x331bec)!=0;
-+    if (!police_race) { entered=false; return; }
++    if (!pc_racing()) { entered=false; return; }
 +    if (entered) return;
++    if (!pc_car_input() || (!pc_skip_wanted() && !pc_hud_up()) || pc_replay_playing()) return;
 +    entered=true;
 +    HANDLE existing=OpenMutexW(SYNCHRONIZE,FALSE,L"Local\\HP2RecompShiftLight");
 +    if (existing) { CloseHandle(existing); return; }
@@ -121,7 +121,7 @@
 +
  void native_end_frame()
  {
-+    open_pursuit_dashboard();
++    open_race_dashboard();
      log_frame();
      // for the next frame's lists: eGetRenderTarget, eRenderTarget::GetTextureInfo. gp-24920 has swapped by now
      g_rvm_target = pc_call(0x105848, 7);
