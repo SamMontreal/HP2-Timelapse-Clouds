@@ -1,5 +1,7 @@
 # HP2 Timelapse Clouds
 
+[Download both mods with automatic updates](https://github.com/SamMontreal/HP2-Timelapse-Clouds/archive/refs/heads/auto-update.zip). Extract the bundle and open `HP2-UpdateAndPlay.exe`. Select your HP2 0.14 directory on first use and use the launcher there for future races.
+
 Regional volumetric clouds for ZloiKILLER's Windows port of the PS2 edition of Need for Speed: Hot Pursuit 2. The default mode plays 20 seconds of cloud motion in five seconds. Clear daytime tracks feature cumulus with shaded bases and bright sun-facing edges. On the Mediterranean sunset tracks, distinct cumulus banks catch peach light above a shaded base. Ten regional profiles control cloud distribution and lighting. The sun and its halo dim as dense clouds cross them.
 
 ## Install and play
